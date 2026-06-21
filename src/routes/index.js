@@ -1,0 +1,43 @@
+const router = require('express').Router();
+const authController = require('../controllers/authController');
+const userController = require('../controllers/userController');
+const exam = require('../controllers/examController');
+const student = require('../controllers/studentController');
+const teacher = require('../controllers/teacherController');
+const subscription = require('../controllers/subscriptionController');
+const { auth, allowRoles } = require('../middleware/auth');
+const { requireFields } = require('../middleware/validate');
+
+router.post('/auth/register', requireFields('name','email','password','role'), authController.register);
+router.post('/auth/login', requireFields('email','password'), authController.login);
+router.post('/auth/logout', auth, authController.logout);
+router.get('/auth/me', auth, authController.me);
+router.get('/users/me', auth, authController.me);
+router.patch('/users/me', auth, userController.updateMe);
+router.post('/users/invite', auth, allowRoles('organization_owner'), requireFields('email','role'), userController.invite);
+
+const staff = [auth, allowRoles('organization_owner','teacher')];
+router.post('/exam-slots', ...staff, requireFields('title','category','examType','startDateTime','endDateTime','durationMinutes'), exam.createSlot);
+router.get('/exam-slots', ...staff, exam.listManaged);
+router.get('/exam-slots/:id', ...staff, exam.getManaged);
+router.patch('/exam-slots/:id', ...staff, exam.updateSlot);
+router.delete('/exam-slots/:id', ...staff, exam.deleteSlot);
+router.post('/exam-slots/:id/questions', ...staff, requireFields('type','questionText','marks'), exam.addQuestion);
+router.patch('/questions/:questionId', ...staff, requireFields('type','questionText','marks'), exam.updateQuestion);
+router.delete('/questions/:questionId', ...staff, exam.deleteQuestion);
+router.post('/exam-slots/:id/assign-students', ...staff, exam.assign);
+router.post('/exam-slots/:id/remove-student', ...staff, requireFields('studentId'), exam.removeStudent);
+router.get('/teacher/access-requests', ...staff, teacher.requests);
+router.patch('/teacher/access-requests/:id/accept', ...staff, teacher.reviewRequest('accepted'));
+router.patch('/teacher/access-requests/:id/reject', ...staff, teacher.reviewRequest('rejected'));
+router.get('/exam-slots/:id/submissions', ...staff, teacher.submissions);
+router.get('/submissions/:id', ...staff, teacher.submission);
+router.patch('/submissions/:id/review-written', ...staff, teacher.reviewWritten);
+
+const students = [auth, allowRoles('student')];
+router.get('/student/exam-slots', ...students, student.listSlots);
+router.post('/student/exam-slots/:id/request-access', ...students, student.requestAccess);
+router.get('/student/exam-slots/:id', ...students, student.getExam);
+router.post('/student/exam-slots/:id/submit', ...students, student.submit);
+router.get('/subscription/current', auth, subscription.current);
+module.exports = router;

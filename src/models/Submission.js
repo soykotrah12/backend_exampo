@@ -1,0 +1,5 @@
+const mongoose = require('mongoose');
+const answer = new mongoose.Schema({ questionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Question', required: true }, type: { type: String, enum: ['TRUE_FALSE_GROUP','SINGLE_BEST_ANSWER','WRITTEN'], required: true }, answers: { type: Map, of: Boolean }, selectedOption: String, writtenAnswer: String, awardedMarks: { type: Number, default: 0 } }, { _id: false });
+const schema = new mongoose.Schema({ examSlot: { type: mongoose.Schema.Types.ObjectId, ref: 'ExamSlot', required: true }, student: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }, organization: { type: mongoose.Schema.Types.ObjectId, ref: 'Organization', required: true }, answers: [answer], mcqScore: { type: Number, default: 0 }, writtenScore: { type: Number, default: null }, totalScore: { type: Number, default: 0 }, autoSubmitted: { type: Boolean, default: false }, submittedAt: { type: Date, default: Date.now }, status: { type: String, enum: ['submitted','reviewed'], default: 'submitted' } }, { timestamps: true });
+schema.index({ examSlot: 1, student: 1 }, { unique: true });
+module.exports = mongoose.model('Submission', schema);
