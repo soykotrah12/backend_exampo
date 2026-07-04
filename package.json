@@ -8,7 +8,8 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "seed:plans": "node src/scripts/seedPlans.js",
-    "check": "node --check server.js && node --check src/app.js && node --check src/routes/index.js"
+    "check": "node --check server.js && node --check src/app.js && node --check src/routes/index.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",

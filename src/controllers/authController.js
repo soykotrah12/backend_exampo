@@ -4,6 +4,7 @@ const Organization = require('../models/Organization');
 const asyncHandler = require('../utils/asyncHandler');
 const AppError = require('../utils/AppError');
 const permissions = require('../services/permissionService');
+const { generateCode } = require('../utils/codeGenerator');
 
 const tokenFor = (user) => jwt.sign({ sub: user._id.toString(), role: user.role }, process.env.JWT_SECRET || 'development-only-secret', { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
 const authPayload = (user) => ({ token: tokenFor(user), user: user.toSafeJSON() });
@@ -12,13 +13,12 @@ exports.register = asyncHandler(async (req, res) => {
   if (!['organization_owner','teacher','student'].includes(role)) throw new AppError(400, 'Invalid registration role');
   if (String(password || '').length < 8) throw new AppError(400, 'Password must contain at least 8 characters');
   if (await User.exists({ email: String(email).toLowerCase() })) throw new AppError(409, 'Email already registered');
-  if (role === 'teacher') throw new AppError(403, 'Teachers must be invited by an organization owner');
   let user;
   if (role === 'organization_owner') {
     const plan = await permissions.ensureFreePlan();
     try {
       user = await User.create({ name, email, password, role });
-      const organization = await Organization.create({ name: organizationName || `${name}'s Organization`, owner: user._id, plan: plan._id, subscriptionStatus: 'free', subscriptionStartDate: new Date() });
+      const organization = await Organization.create({ name: organizationName || `${name}'s Organization`, organizationCode: generateCode('ORG'), owner: user._id, plan: plan._id, subscriptionStatus: 'free', subscriptionStartDate: new Date() });
       user.organization = organization._id;
       await user.save();
     } catch (error) {

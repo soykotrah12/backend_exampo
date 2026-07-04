@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const Plan = require('../models/Plan');
 const base = { analyticsEnabled: false, exportEnabled: false, brandingEnabled: false, questionBankEnabled: false };
 const plans = [
-  { name: 'Free', code: 'FREE', priceMonthly: 0, priceYearly: 0, limits: { ...base, teachersLimit: 1, studentsLimit: 20, examSlotsPerMonth: 3, questionsPerExam: 20, writtenQuestionsPerExam: 5 } },
+  { name: 'Free', code: 'FREE', priceMonthly: 0, priceYearly: 0, limits: { ...base, teachersLimit: 2, studentsLimit: 20, examSlotsPerMonth: 3, questionsPerExam: 20, writtenQuestionsPerExam: 5 } },
   { name: 'Basic', code: 'BASIC', priceMonthly: 19, priceYearly: 190, limits: { ...base, teachersLimit: 5, studentsLimit: 150, examSlotsPerMonth: 20, questionsPerExam: 100, writtenQuestionsPerExam: 25, analyticsEnabled: true } },
   { name: 'Pro', code: 'PRO', priceMonthly: 49, priceYearly: 490, limits: { ...base, teachersLimit: 20, studentsLimit: 1000, examSlotsPerMonth: 100, questionsPerExam: 250, writtenQuestionsPerExam: 100, analyticsEnabled: true, exportEnabled: true, questionBankEnabled: true } },
   { name: 'Institution', code: 'INSTITUTION', priceMonthly: 149, priceYearly: 1490, limits: { teachersLimit: 200, studentsLimit: 10000, examSlotsPerMonth: 1000, questionsPerExam: 500, writtenQuestionsPerExam: 250, analyticsEnabled: true, exportEnabled: true, brandingEnabled: true, questionBankEnabled: true } },
