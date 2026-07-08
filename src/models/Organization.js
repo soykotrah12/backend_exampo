@@ -2,6 +2,15 @@ const mongoose = require('mongoose');
 const override = { enabled: { type: Boolean, default: false }, teachersLimit: Number, studentsLimit: Number, examSlotsPerMonth: Number, questionsPerExam: Number, writtenQuestionsPerExam: Number, analyticsEnabled: Boolean, exportEnabled: Boolean, brandingEnabled: Boolean, questionBankEnabled: Boolean };
 module.exports = mongoose.model('Organization', new mongoose.Schema({
   name: { type: String, required: true, trim: true }, owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  email: { type: String, lowercase: true, trim: true, default: '' },
+  phone: { type: String, trim: true, default: '' },
+  contactNumber: { type: String, trim: true, default: '' },
+  address: { type: String, trim: true, default: '' },
+  category: { type: String, trim: true, default: '' },
+  type: { type: String, trim: true, default: '' },
+  description: { type: String, trim: true, default: '', maxlength: 1000 },
+  logoUrl: { type: String, default: '' },
+  avatarUrl: { type: String, default: '' },
   organizationCode: { type: String, unique: true, sparse: true, uppercase: true, trim: true, index: true },
   codeCreatedAt: { type: Date, default: Date.now },
   teachers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
@@ -9,4 +18,10 @@ module.exports = mongoose.model('Organization', new mongoose.Schema({
   services: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Service' }],
   plan: { type: mongoose.Schema.Types.ObjectId, ref: 'Plan', required: true }, subscriptionStatus: { type: String, enum: ['free', 'active', 'expired', 'cancelled'], default: 'free' },
   subscriptionStartDate: Date, subscriptionEndDate: Date, permissionOverrides: override, isActive: { type: Boolean, default: true },
+  verificationStatus: { type: String, enum: ['unverified', 'pending', 'verified', 'rejected'], default: 'unverified' },
+  verificationDocumentUrl: { type: String, default: '' },
+  verificationSubmittedAt: Date,
+  verificationReviewedAt: Date,
+  verificationReviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  verificationRejectionReason: { type: String, default: '', trim: true },
 }, { timestamps: true }));

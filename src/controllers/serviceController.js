@@ -46,7 +46,7 @@ exports.create = asyncHandler(async (req, res) => {
     createdBy: req.user._id,
   });
   await Organization.updateOne({ _id: req.user.organization }, { $addToSet: { services: service._id } });
-  res.status(201).json({ success: true, message: 'Service created', data: await withStats(service) });
+  res.status(201).json({ success: true, message: 'Service created successfully', data: await withStats(service) });
 });
 
 exports.list = asyncHandler(async (req, res) => {
@@ -80,7 +80,7 @@ exports.update = asyncHandler(async (req, res) => {
   });
   if (req.body.isActive !== undefined) service.isActive = Boolean(req.body.isActive);
   await service.save();
-  res.json({ success: true, message: 'Service updated', data: await withStats(service) });
+  res.json({ success: true, message: 'Service updated successfully', data: await withStats(service) });
 });
 
 exports.remove = asyncHandler(async (req, res) => {
@@ -88,5 +88,5 @@ exports.remove = asyncHandler(async (req, res) => {
   const service = await managed(req.params.id, req.user);
   service.isActive = false;
   await service.save();
-  res.json({ success: true, message: 'Service deactivated', data: await withStats(service) });
+  res.json({ success: true, message: 'Service deactivated successfully', data: await withStats(service) });
 });

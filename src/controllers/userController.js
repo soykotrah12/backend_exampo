@@ -6,7 +6,7 @@ const AppError = require('../utils/AppError');
 const permissions = require('../services/permissionService');
 
 exports.updateMe = asyncHandler(async (req, res) => {
-  const allowed = ['name','bio','location','avatarUrl'];
+  const allowed = ['name','bio','location','avatarUrl','phone','contactNumber','address'];
   allowed.forEach((key) => { if (req.body[key] !== undefined) req.user[key] = String(req.body[key]).trim(); });
   await req.user.save(); res.json({ success: true, message: 'Profile updated', data: req.user.toSafeJSON() });
 });

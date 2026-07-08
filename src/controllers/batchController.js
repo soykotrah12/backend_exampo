@@ -33,7 +33,7 @@ exports.create = asyncHandler(async (req, res) => {
   }
   const batch = await Batch.create({ name, service: service?._id, batchCode: generateCode('BAT'), organization: req.user.organization, createdBy: req.user._id });
   await batch.populate('service', 'name color icon');
-  res.status(201).json({ success: true, message: 'Batch created', data: batch });
+  res.status(201).json({ success: true, message: 'Batch created successfully', data: batch });
 });
 
 exports.list = asyncHandler(async (req, res) => {
@@ -78,21 +78,21 @@ exports.update = asyncHandler(async (req, res) => {
   }
   if (req.body.isActive !== undefined) batch.isActive = Boolean(req.body.isActive);
   await batch.save();
-  res.json({ success: true, message: 'Batch updated', data: batch });
+  res.json({ success: true, message: 'Batch updated successfully', data: batch });
 });
 exports.remove = asyncHandler(async (req, res) => {
   ownerOnly(req.user);
   const batch = await managed(req.params.id, req.user);
   batch.isActive = false;
   await batch.save();
-  res.json({ success: true, message: 'Batch deactivated' });
+  res.json({ success: true, message: 'Batch deactivated successfully', data: batch });
 });
 exports.deactivate = asyncHandler(async (req, res) => {
   ownerOnly(req.user);
   const batch = await managed(req.params.id, req.user);
   batch.isActive = false;
   await batch.save();
-  res.json({ success: true, message: 'Batch deactivated', data: batch });
+  res.json({ success: true, message: 'Batch deactivated successfully', data: batch });
 });
 
 exports.examSlots = asyncHandler(async (req, res) => {

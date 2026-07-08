@@ -58,6 +58,10 @@ exports.review = (status) => asyncHandler(async (req, res) => {
     teacher.organization = organization._id;
     teacher.joinedOrganizations.addToSet(organization._id);
     teacher.teacherJoinStatus = 'accepted';
+    teacher.organizationAccessStatus = 'active';
+    teacher.pausedUntil = null;
+    teacher.pausedReason = '';
+    teacher.removedAt = null;
     organization.teachers.addToSet(teacher._id);
     await Promise.all([teacher.save(), organization.save()]);
   } else {

@@ -76,6 +76,7 @@ export const login = catchAsync(async (req, res) => {
       "Email or userId and password are required",
     );
   }
+  console.log(email, userId, password);
 
   const query = email ? { email } : { userId };
   const user = await User.findOne(query).select("+password +verificationInfo");

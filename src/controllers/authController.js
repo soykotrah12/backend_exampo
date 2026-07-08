@@ -9,23 +9,62 @@ const { generateCode } = require('../utils/codeGenerator');
 const tokenFor = (user) => jwt.sign({ sub: user._id.toString(), role: user.role }, process.env.JWT_SECRET || 'development-only-secret', { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
 const authPayload = (user) => ({ token: tokenFor(user), user: user.toSafeJSON() });
 exports.register = asyncHandler(async (req, res) => {
-  const { name, email, password, role, organizationName } = req.body;
+  const {
+    name,
+    email,
+    password,
+    role,
+    organizationName,
+    organizationEmail,
+    organizationPhone,
+    phone,
+    contactNumber,
+    organizationAddress,
+    address,
+    organizationCategory,
+    category,
+    organizationType,
+    type,
+    description,
+  } = req.body;
   if (!['organization_owner','teacher','student'].includes(role)) throw new AppError(400, 'Invalid registration role');
   if (String(password || '').length < 8) throw new AppError(400, 'Password must contain at least 8 characters');
-  if (await User.exists({ email: String(email).toLowerCase() })) throw new AppError(409, 'Email already registered');
+  const loginEmail = String(role === 'organization_owner' ? (organizationEmail || email) : email).toLowerCase().trim();
+  if (await User.exists({ email: loginEmail })) throw new AppError(409, 'Email already registered');
   let user;
   if (role === 'organization_owner') {
     const plan = await permissions.ensureFreePlan();
+    const orgName = String(organizationName || name || '').trim();
+    if (!orgName) throw new AppError(400, 'Organization name is required');
+    if (!loginEmail) throw new AppError(400, 'Organization email is required');
+    const orgPhone = String(organizationPhone || contactNumber || phone || '').trim();
+    const orgAddress = String(organizationAddress || address || '').trim();
+    const orgCategory = String(organizationCategory || category || organizationType || type || '').trim();
     try {
-      user = await User.create({ name, email, password, role });
-      const organization = await Organization.create({ name: organizationName || `${name}'s Organization`, organizationCode: generateCode('ORG'), owner: user._id, plan: plan._id, subscriptionStatus: 'free', subscriptionStartDate: new Date() });
+      user = await User.create({ name: orgName, email: loginEmail, password, role, phone: orgPhone, contactNumber: orgPhone, address: orgAddress });
+      const organization = await Organization.create({
+        name: orgName,
+        email: loginEmail,
+        phone: orgPhone,
+        contactNumber: orgPhone,
+        address: orgAddress,
+        category: orgCategory,
+        type: orgCategory,
+        description: String(description || '').trim(),
+        organizationCode: generateCode('ORG'),
+        owner: user._id,
+        plan: plan._id,
+        subscriptionStatus: 'free',
+        subscriptionStartDate: new Date(),
+        verificationStatus: 'unverified',
+      });
       user.organization = organization._id;
       await user.save();
     } catch (error) {
       if (user?._id) await User.deleteOne({ _id: user._id });
       throw error;
     }
-  } else user = await User.create({ name, email, password, role });
+  } else user = await User.create({ name, email: loginEmail, password, role });
   res.status(201).json({ success: true, message: 'Account created', data: authPayload(user) });
 });
 exports.login = asyncHandler(async (req, res) => {
