@@ -8,6 +8,26 @@ const { generateCode } = require('../utils/codeGenerator');
 
 const tokenFor = (user) => jwt.sign({ sub: user._id.toString(), role: user.role }, process.env.JWT_SECRET || 'development-only-secret', { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
 const authPayload = (user) => ({ token: tokenFor(user), user: user.toSafeJSON() });
+const planSnapshotFor = (plan, billingCycle = 'monthly') => {
+  const limits = plan?.limits || {};
+  const price = billingCycle === 'yearly' ? plan.priceYearly : plan.priceMonthly;
+  return {
+    planId: plan?._id,
+    name: plan?.name || '',
+    code: plan?.code || '',
+    billingType: plan?.billingType || (plan?.priceMonthly ? 'monthly' : 'free'),
+    price: Number(price || 0),
+    monthlyPrice: Number(plan?.priceMonthly || 0),
+    yearlyPrice: Number(plan?.priceYearly || 0),
+    teacherLimit: Number(limits.teachersLimit || 0),
+    studentLimit: Number(limits.studentsLimit || 0),
+    serviceLimit: Number(limits.servicesLimit || 0),
+    batchLimit: Number(limits.batchesLimit || 0),
+    examLimit: Number(limits.examSlotsPerMonth || 0),
+    features: plan?.features || [],
+    capturedAt: new Date(),
+  };
+};
 exports.register = asyncHandler(async (req, res) => {
   const {
     name,
@@ -54,6 +74,7 @@ exports.register = asyncHandler(async (req, res) => {
         organizationCode: generateCode('ORG'),
         owner: user._id,
         plan: plan._id,
+        planSnapshot: planSnapshotFor(plan, 'free'),
         subscriptionStatus: 'free',
         subscriptionStartDate: new Date(),
         verificationStatus: 'unverified',
@@ -70,6 +91,9 @@ exports.register = asyncHandler(async (req, res) => {
 exports.login = asyncHandler(async (req, res) => {
   const user = await User.findOne({ email: String(req.body.email || '').toLowerCase() }).select('+password');
   if (!user || !(await user.comparePassword(req.body.password || ''))) throw new AppError(401, 'Invalid email or password');
+  user.lastLoginAt = new Date();
+  user.lastActiveAt = user.lastLoginAt;
+  await user.save();
   res.json({ success: true, message: 'Logged in', data: authPayload(user) });
 });
 exports.me = asyncHandler(async (req, res) => res.json({ success: true, data: req.user.toSafeJSON() }));

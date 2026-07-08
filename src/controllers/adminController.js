@@ -10,8 +10,8 @@ const TeacherJoinRequest = require('../models/TeacherJoinRequest');
 const asyncHandler = require('../utils/asyncHandler');
 const AppError = require('../utils/AppError');
 
-const userFields = 'name email role avatarUrl phone contactNumber address bio location organization organizationAccessStatus teacherJoinStatus assignedServices assignedBatches batches isActive createdAt updatedAt';
-const organizationFields = 'name email phone contactNumber address category type description logoUrl avatarUrl organizationCode owner plan subscriptionStatus verificationStatus verificationDocumentUrl verificationSubmittedAt verificationRejectionReason isActive createdAt updatedAt';
+const userFields = 'name email role avatarUrl phone contactNumber address bio location organization organizationAccessStatus teacherJoinStatus assignedServices assignedBatches batches isActive deletedAt lastLoginAt lastActiveAt createdAt updatedAt';
+const organizationFields = 'name email phone contactNumber address category type description logoUrl avatarUrl organizationCode owner plan planSnapshot pendingPlanChange subscriptionStatus subscriptionStartDate subscriptionEndDate subscriptionBillingCycle subscriptionAmount subscriptionPaymentStatus subscriptionAdminNote subscriptionCancelReason subscriptionCancelledAt subscriptionCancelAtPeriodEnd subscriptionRefundMarkedAt subscriptionRefundAmount subscriptionRefundReason subscriptionRefundNote verificationStatus verificationDocumentUrl verificationSubmittedAt verificationRejectionReason isActive createdAt updatedAt';
 
 const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -36,6 +36,95 @@ const paged = async (model, query, req, options = {}) => {
   return { items, page, limit, total, totalPages: Math.max(Math.ceil(total / limit), 1) };
 };
 
+const planSnapshotFor = (plan, billingCycle = 'monthly') => {
+  const limits = plan?.limits || {};
+  const cycle = billingCycle || plan?.billingType || 'monthly';
+  const price = cycle === 'yearly' ? plan?.priceYearly : plan?.priceMonthly;
+  return {
+    planId: plan?._id,
+    name: plan?.name || '',
+    code: plan?.code || '',
+    billingType: plan?.billingType || cycle,
+    price: Number(price || 0),
+    monthlyPrice: Number(plan?.priceMonthly || 0),
+    yearlyPrice: Number(plan?.priceYearly || 0),
+    teacherLimit: Number(limits.teachersLimit || 0),
+    studentLimit: Number(limits.studentsLimit || 0),
+    serviceLimit: Number(limits.servicesLimit || 0),
+    batchLimit: Number(limits.batchesLimit || 0),
+    examLimit: Number(limits.examSlotsPerMonth || 0),
+    features: plan?.features || [],
+    capturedAt: new Date(),
+  };
+};
+
+const cleanFeatures = (features) => (Array.isArray(features) ? features : String(features || '').split('\n'))
+  .map((feature) => String(feature || '').trim())
+  .filter(Boolean);
+
+const normalizePlanBody = (body) => {
+  const limits = body.limits || {};
+  const numberFrom = (...values) => {
+    const value = values.find((item) => item !== undefined && item !== null && item !== '');
+    return value === undefined ? undefined : Number(value);
+  };
+  const normalized = {};
+  ['name', 'description', 'billingType'].forEach((key) => {
+    if (body[key] !== undefined) normalized[key] = String(body[key]).trim();
+  });
+  if (body.code !== undefined) normalized.code = String(body.code).trim().toUpperCase();
+  const monthly = numberFrom(body.monthlyPrice, body.priceMonthly);
+  const yearly = numberFrom(body.yearlyPrice, body.priceYearly);
+  if (monthly !== undefined) normalized.priceMonthly = monthly;
+  if (yearly !== undefined) normalized.priceYearly = yearly;
+  if (body.features !== undefined) normalized.features = cleanFeatures(body.features);
+  if (body.isActive !== undefined) normalized.isActive = Boolean(body.isActive);
+  if (body.sortOrder !== undefined) normalized.sortOrder = Number(body.sortOrder || 0);
+  const nextLimits = {};
+  const limitMap = [
+    ['teachersLimit', body.teacherLimit, limits.teachersLimit],
+    ['studentsLimit', body.studentLimit, limits.studentsLimit],
+    ['servicesLimit', body.serviceLimit, limits.servicesLimit],
+    ['batchesLimit', body.batchLimit, limits.batchesLimit],
+    ['examSlotsPerMonth', body.examLimit, limits.examSlotsPerMonth],
+    ['questionsPerExam', body.questionsPerExam, limits.questionsPerExam],
+    ['writtenQuestionsPerExam', body.writtenQuestionsPerExam, limits.writtenQuestionsPerExam],
+  ];
+  limitMap.forEach(([key, ...values]) => {
+    const value = numberFrom(...values);
+    if (value !== undefined) nextLimits[key] = value;
+  });
+  ['analyticsEnabled', 'exportEnabled', 'brandingEnabled', 'questionBankEnabled'].forEach((key) => {
+    if (body[key] !== undefined) nextLimits[key] = Boolean(body[key]);
+    if (limits[key] !== undefined) nextLimits[key] = Boolean(limits[key]);
+  });
+  if (Object.keys(nextLimits).length) normalized.limits = nextLimits;
+  return normalized;
+};
+
+const mergePlanLimits = (plan, limits = {}) => ({
+  teachersLimit: limits.teachersLimit ?? plan?.limits?.teachersLimit ?? 0,
+  studentsLimit: limits.studentsLimit ?? plan?.limits?.studentsLimit ?? 0,
+  servicesLimit: limits.servicesLimit ?? plan?.limits?.servicesLimit ?? 0,
+  batchesLimit: limits.batchesLimit ?? plan?.limits?.batchesLimit ?? 0,
+  examSlotsPerMonth: limits.examSlotsPerMonth ?? plan?.limits?.examSlotsPerMonth ?? 0,
+  questionsPerExam: limits.questionsPerExam ?? plan?.limits?.questionsPerExam ?? 0,
+  writtenQuestionsPerExam: limits.writtenQuestionsPerExam ?? plan?.limits?.writtenQuestionsPerExam ?? 0,
+  analyticsEnabled: limits.analyticsEnabled ?? plan?.limits?.analyticsEnabled ?? false,
+  exportEnabled: limits.exportEnabled ?? plan?.limits?.exportEnabled ?? false,
+  brandingEnabled: limits.brandingEnabled ?? plan?.limits?.brandingEnabled ?? false,
+  questionBankEnabled: limits.questionBankEnabled ?? plan?.limits?.questionBankEnabled ?? false,
+});
+
+const ensureNotProtectedSuperAdmin = async (target, currentUserId) => {
+  if (!target) throw new AppError(404, 'User not found');
+  if (String(target._id) === String(currentUserId)) throw new AppError(400, 'You cannot delete your own admin account');
+  if (target.role === 'super_admin') {
+    const remaining = await User.countDocuments({ role: 'super_admin', isActive: true, deletedAt: null, _id: { $ne: target._id } });
+    if (remaining < 1) throw new AppError(400, 'You cannot delete the last active super admin');
+  }
+};
+
 const orgSearchQuery = (req) => {
   const query = {};
   if (req.query.search) {
@@ -53,16 +142,27 @@ const orgSearchQuery = (req) => {
 
 const userSearchQuery = (req, role) => {
   const query = {};
+  const and = [];
   if (role) query.role = role;
   if (req.query.role) query.role = req.query.role;
   if (req.query.organization) query.organization = req.query.organization;
   if (req.query.status === 'active') query.isActive = true;
   if (req.query.status === 'blocked') query.isActive = false;
+  if (req.query.status === 'deleted') query.deletedAt = { $ne: null };
   if (req.query.status === 'paused') query.organizationAccessStatus = 'paused';
+  if (req.query.status === 'inactive') and.push({ $or: [{ lastActiveAt: { $lte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } }, { lastActiveAt: null }] });
+  if (req.query.inactiveDays) {
+    const days = Math.max(Number(req.query.inactiveDays), 1);
+    and.push({ $or: [
+      { lastActiveAt: { $lte: new Date(Date.now() - days * 24 * 60 * 60 * 1000) } },
+      { lastActiveAt: null },
+    ] });
+  }
   if (req.query.search) {
     const regex = new RegExp(escapeRegex(req.query.search), 'i');
-    query.$or = [{ name: regex }, { email: regex }];
+    and.push({ $or: [{ name: regex }, { email: regex }] });
   }
+  if (and.length) query.$and = and;
   return query;
 };
 
@@ -145,6 +245,36 @@ exports.dashboardSummary = asyncHandler(async (_req, res) => {
   });
 });
 
+exports.me = asyncHandler(async (req, res) => {
+  res.json({ success: true, data: req.user.toSafeJSON() });
+});
+
+exports.updateMe = asyncHandler(async (req, res) => {
+  const name = String(req.body.name || '').trim();
+  const email = String(req.body.email || '').toLowerCase().trim();
+  if (!name) throw new AppError(400, 'Name is required');
+  if (!email) throw new AppError(400, 'Email is required');
+  const duplicate = await User.findOne({ email, _id: { $ne: req.user._id } }).select('_id');
+  if (duplicate) throw new AppError(409, 'Email already registered');
+  req.user.name = name;
+  req.user.email = email;
+  await req.user.save();
+  res.json({ success: true, message: 'Profile updated successfully', data: req.user.toSafeJSON() });
+});
+
+exports.changeMyPassword = asyncHandler(async (req, res) => {
+  const currentPassword = String(req.body.currentPassword || '');
+  const newPassword = String(req.body.newPassword || '');
+  if (!currentPassword) throw new AppError(400, 'Current password is required');
+  if (newPassword.length < 8) throw new AppError(400, 'New password must contain at least 8 characters');
+  const user = await User.findById(req.user._id).select('+password');
+  if (!user || !(await user.comparePassword(currentPassword))) throw new AppError(400, 'Current password is incorrect');
+  user.password = newPassword;
+  user.tokenVersion = (user.tokenVersion || 0) + 1;
+  await user.save();
+  res.json({ success: true, message: 'Password changed successfully' });
+});
+
 exports.organizations = asyncHandler(async (req, res) => {
   const data = await paged(Organization, orgSearchQuery(req), req, {
     select: organizationFields,
@@ -203,9 +333,44 @@ exports.userDetails = asyncHandler(async (req, res) => {
 });
 
 exports.setUserActive = (active) => asyncHandler(async (req, res) => {
-  const user = await User.findByIdAndUpdate(req.params.id, { isActive: active }, { new: true }).select(userFields);
+  const update = active ? { isActive: true, deletedAt: null } : { isActive: false };
+  const user = await User.findByIdAndUpdate(req.params.id, update, { new: true }).select(userFields);
   if (!user) throw new AppError(404, 'User not found');
   res.json({ success: true, message: active ? 'User unblocked' : 'User blocked', data: user });
+});
+
+exports.deleteUserEmail = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.params.id);
+  await ensureNotProtectedSuperAdmin(user, req.user._id);
+  if (!user.deletedEmail) user.deletedEmail = user.email;
+  user.email = `deleted-${user._id}@deleted.local`;
+  await user.save();
+  res.json({ success: true, message: 'User email removed', data: user.toSafeJSON() });
+});
+
+exports.deleteUser = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.params.id);
+  await ensureNotProtectedSuperAdmin(user, req.user._id);
+  if (!user.deletedEmail) user.deletedEmail = user.email;
+  user.email = `deleted-${user._id}@deleted.local`;
+  user.isActive = false;
+  user.deletedAt = new Date();
+  user.tokenVersion = (user.tokenVersion || 0) + 1;
+  await user.save();
+  res.json({ success: true, message: 'User account deleted', data: user.toSafeJSON() });
+});
+
+exports.restoreUser = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.params.id);
+  if (!user) throw new AppError(404, 'User not found');
+  if (user.deletedEmail) {
+    const duplicate = await User.findOne({ email: user.deletedEmail, _id: { $ne: user._id } }).select('_id');
+    if (!duplicate) user.email = user.deletedEmail;
+  }
+  user.deletedAt = null;
+  user.isActive = true;
+  await user.save();
+  res.json({ success: true, message: 'User restored', data: user.toSafeJSON() });
 });
 
 exports.teachers = asyncHandler(async (req, res) => {
@@ -403,19 +568,43 @@ exports.plans = asyncHandler(async (req, res) => {
   const query = {};
   if (req.query.status === 'active') query.isActive = true;
   if (req.query.status === 'inactive') query.isActive = false;
-  if (req.query.search) query.name = new RegExp(escapeRegex(req.query.search), 'i');
-  res.json({ success: true, data: await paged(Plan, query, req) });
+  if (req.query.status === 'deleted') query.deletedAt = { $ne: null };
+  if (req.query.search) {
+    const regex = new RegExp(escapeRegex(req.query.search), 'i');
+    query.$or = [{ name: regex }, { code: regex }];
+  }
+  res.json({ success: true, data: await paged(Plan, query, req, { sort: { sortOrder: 1, priceMonthly: 1, createdAt: -1 } }) });
+});
+
+exports.planDetails = asyncHandler(async (req, res) => {
+  const plan = await Plan.findById(req.params.id).lean();
+  if (!plan) throw new AppError(404, 'Plan not found');
+  const activeSubscriptions = await Organization.countDocuments({ plan: plan._id, subscriptionStatus: { $in: ['active', 'trialing', 'pending', 'free'] } });
+  res.json({ success: true, data: { ...plan, activeSubscriptions } });
 });
 
 exports.createPlan = asyncHandler(async (req, res) => {
-  const plan = await Plan.create(req.body);
+  const body = normalizePlanBody(req.body);
+  body.limits = mergePlanLimits(null, body.limits);
+  const plan = await Plan.create(body);
   res.status(201).json({ success: true, message: 'Plan created', data: plan });
 });
 
 exports.updatePlan = asyncHandler(async (req, res) => {
-  const plan = await Plan.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+  const existing = await Plan.findById(req.params.id);
+  if (!existing) throw new AppError(404, 'Plan not found');
+  const body = normalizePlanBody(req.body);
+  if (body.limits) body.limits = mergePlanLimits(existing, body.limits);
+  Object.assign(existing, body);
+  const plan = await existing.save();
   if (!plan) throw new AppError(404, 'Plan not found');
   res.json({ success: true, message: 'Plan updated', data: plan });
+});
+
+exports.activatePlan = asyncHandler(async (req, res) => {
+  const plan = await Plan.findByIdAndUpdate(req.params.id, { isActive: true, deletedAt: null }, { new: true });
+  if (!plan) throw new AppError(404, 'Plan not found');
+  res.json({ success: true, message: 'Plan activated', data: plan });
 });
 
 exports.deactivatePlan = asyncHandler(async (req, res) => {
@@ -424,21 +613,142 @@ exports.deactivatePlan = asyncHandler(async (req, res) => {
   res.json({ success: true, message: 'Plan deactivated', data: plan });
 });
 
+exports.deletePlan = asyncHandler(async (req, res) => {
+  const activeSubscriptions = await Organization.countDocuments({ plan: req.params.id, subscriptionStatus: { $in: ['active', 'trialing', 'pending', 'free'] } });
+  const plan = await Plan.findByIdAndUpdate(req.params.id, { isActive: false, deletedAt: new Date() }, { new: true });
+  if (!plan) throw new AppError(404, 'Plan not found');
+  const message = activeSubscriptions
+    ? 'Plan deactivated for new purchases; existing subscriptions keep their current snapshot'
+    : 'Plan deleted';
+  res.json({ success: true, message, data: plan });
+});
+
 exports.subscriptions = asyncHandler(async (req, res) => {
   const query = {};
   if (req.query.status) query.subscriptionStatus = req.query.status;
   if (req.query.organization) query._id = req.query.organization;
+  if (req.query.plan) query.plan = req.query.plan;
+  if (req.query.search) {
+    const regex = new RegExp(escapeRegex(req.query.search), 'i');
+    query.$or = [{ name: regex }, { email: regex }, { organizationCode: regex }];
+  }
   const data = await paged(Organization, query, req, { select: organizationFields, populate: [{ path: 'plan' }, { path: 'owner', select: 'name email' }] });
   res.json({ success: true, data });
 });
 
+exports.subscriptionDetails = asyncHandler(async (req, res) => {
+  const organization = await Organization.findById(req.params.id)
+    .select(organizationFields)
+    .populate('plan')
+    .populate('owner', 'name email avatarUrl')
+    .populate('pendingPlanChange.plan')
+    .lean();
+  if (!organization) throw new AppError(404, 'Subscription not found');
+  res.json({ success: true, data: organization });
+});
+
 exports.updateSubscription = asyncHandler(async (req, res) => {
-  const allowed = ['plan','subscriptionStatus','subscriptionStartDate','subscriptionEndDate'];
+  const allowed = ['plan','subscriptionStatus','subscriptionStartDate','subscriptionEndDate','subscriptionBillingCycle','subscriptionAmount','subscriptionPaymentStatus','subscriptionAdminNote'];
   const body = {};
   allowed.forEach((key) => { if (req.body[key] !== undefined) body[key] = req.body[key]; });
+  if (body.plan) {
+    const plan = await Plan.findById(body.plan);
+    if (!plan) throw new AppError(404, 'Plan not found');
+    body.planSnapshot = planSnapshotFor(plan, body.subscriptionBillingCycle || req.body.billingCycle || 'monthly');
+  }
   const item = await Organization.findByIdAndUpdate(req.params.id, body, { new: true, runValidators: true }).populate('plan');
   if (!item) throw new AppError(404, 'Subscription not found');
   res.json({ success: true, message: 'Subscription updated', data: item });
+});
+
+exports.changeSubscriptionPlan = asyncHandler(async (req, res) => {
+  const plan = await Plan.findOne({ _id: req.body.planId, isActive: true });
+  if (!plan) throw new AppError(404, 'Active plan not found');
+  const billingCycle = String(req.body.billingCycle || plan.billingType || 'monthly');
+  const apply = String(req.body.apply || 'now');
+  const update = {};
+  if (apply === 'later') {
+    update.pendingPlanChange = {
+      plan: plan._id,
+      billingCycle,
+      effectiveAt: req.body.effectiveAt || req.body.subscriptionEndDate || null,
+      note: String(req.body.note || '').trim(),
+    };
+  } else {
+    update.plan = plan._id;
+    update.planSnapshot = planSnapshotFor(plan, billingCycle);
+    update.subscriptionBillingCycle = billingCycle;
+    update.subscriptionAmount = update.planSnapshot.price;
+    update.subscriptionStatus = req.body.subscriptionStatus || 'active';
+    update.subscriptionStartDate = req.body.startDate || new Date();
+    if (req.body.endDate) update.subscriptionEndDate = req.body.endDate;
+    update.pendingPlanChange = {};
+  }
+  const item = await Organization.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).populate('plan').populate('owner', 'name email');
+  if (!item) throw new AppError(404, 'Subscription not found');
+  res.json({ success: true, message: apply === 'later' ? 'Plan change scheduled' : 'Plan changed', data: item });
+});
+
+exports.cancelSubscription = asyncHandler(async (req, res) => {
+  const cancelAtPeriodEnd = Boolean(req.body.cancelAtPeriodEnd);
+  const update = {
+    subscriptionCancelReason: String(req.body.reason || '').trim(),
+    subscriptionCancelledAt: new Date(),
+    subscriptionCancelAtPeriodEnd: cancelAtPeriodEnd,
+  };
+  if (!cancelAtPeriodEnd) update.subscriptionStatus = 'cancelled';
+  if (req.body.refund) {
+    update.subscriptionStatus = 'refunded';
+    update.subscriptionRefundMarkedAt = new Date();
+    update.subscriptionRefundReason = update.subscriptionCancelReason;
+  }
+  const item = await Organization.findByIdAndUpdate(req.params.id, update, { new: true }).populate('plan').populate('owner', 'name email');
+  if (!item) throw new AppError(404, 'Subscription not found');
+  res.json({ success: true, message: 'Subscription cancelled', data: item });
+});
+
+exports.refundSubscription = asyncHandler(async (req, res) => {
+  const item = await Organization.findByIdAndUpdate(req.params.id, {
+    subscriptionStatus: 'refunded',
+    subscriptionRefundMarkedAt: req.body.refundDate || new Date(),
+    subscriptionRefundAmount: Number(req.body.amount || 0),
+    subscriptionRefundReason: String(req.body.reason || '').trim(),
+    subscriptionRefundNote: String(req.body.note || '').trim(),
+    subscriptionPaymentStatus: 'refunded',
+  }, { new: true }).populate('plan').populate('owner', 'name email');
+  if (!item) throw new AppError(404, 'Subscription not found');
+  res.json({ success: true, message: 'Subscription marked refunded', data: item });
+});
+
+exports.extendSubscription = asyncHandler(async (req, res) => {
+  const organization = await Organization.findById(req.params.id);
+  if (!organization) throw new AppError(404, 'Subscription not found');
+  if (req.body.endDate) organization.subscriptionEndDate = req.body.endDate;
+  else {
+    const days = Math.max(Number(req.body.days || 0), 1);
+    const base = organization.subscriptionEndDate && organization.subscriptionEndDate > new Date() ? organization.subscriptionEndDate : new Date();
+    organization.subscriptionEndDate = new Date(base.getTime() + days * 24 * 60 * 60 * 1000);
+  }
+  if (req.body.note !== undefined) organization.subscriptionAdminNote = String(req.body.note || '').trim();
+  await organization.save();
+  await organization.populate('plan');
+  await organization.populate('owner', 'name email');
+  res.json({ success: true, message: 'Subscription extended', data: organization });
+});
+
+exports.activateSubscription = (active) => asyncHandler(async (req, res) => {
+  const item = await Organization.findByIdAndUpdate(req.params.id, {
+    subscriptionStatus: active ? 'active' : 'cancelled',
+    ...(active ? { subscriptionCancelledAt: null, subscriptionCancelReason: '', subscriptionCancelAtPeriodEnd: false } : { subscriptionCancelledAt: new Date() }),
+  }, { new: true }).populate('plan').populate('owner', 'name email');
+  if (!item) throw new AppError(404, 'Subscription not found');
+  res.json({ success: true, message: active ? 'Subscription activated' : 'Subscription deactivated', data: item });
+});
+
+exports.addSubscriptionNote = asyncHandler(async (req, res) => {
+  const item = await Organization.findByIdAndUpdate(req.params.id, { subscriptionAdminNote: String(req.body.note || '').trim() }, { new: true }).populate('plan').populate('owner', 'name email');
+  if (!item) throw new AppError(404, 'Subscription not found');
+  res.json({ success: true, message: 'Admin note saved', data: item });
 });
 
 exports.paymentRequests = asyncHandler(async (req, res) => {
@@ -458,7 +768,15 @@ exports.reviewPaymentRequest = (status) => asyncHandler(async (req, res) => {
   request.reviewedBy = req.user._id;
   await request.save();
   if (status === 'approved') {
-    await Organization.findByIdAndUpdate(request.organization, { plan: request.plan._id, subscriptionStatus: 'active', subscriptionStartDate: new Date() });
+    await Organization.findByIdAndUpdate(request.organization, {
+      plan: request.plan._id,
+      planSnapshot: planSnapshotFor(request.plan, request.plan.billingType || 'monthly'),
+      subscriptionStatus: 'active',
+      subscriptionStartDate: new Date(),
+      subscriptionBillingCycle: request.plan.billingType || 'monthly',
+      subscriptionAmount: Number(request.amount || request.plan.priceMonthly || 0),
+      subscriptionPaymentStatus: 'approved',
+    });
   }
   res.json({ success: true, message: `Payment request ${status}`, data: request });
 });

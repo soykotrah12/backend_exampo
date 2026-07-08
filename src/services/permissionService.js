@@ -5,12 +5,20 @@ const ExamSlot = require('../models/ExamSlot');
 const Question = require('../models/Question');
 const AppError = require('../utils/AppError');
 
-const freeLimits = { teachersLimit: 2, studentsLimit: 20, examSlotsPerMonth: 3, questionsPerExam: 20, writtenQuestionsPerExam: 5, analyticsEnabled: false, exportEnabled: false, brandingEnabled: false, questionBankEnabled: false };
+const freeLimits = { teachersLimit: 2, studentsLimit: 20, servicesLimit: 0, batchesLimit: 0, examSlotsPerMonth: 3, questionsPerExam: 20, writtenQuestionsPerExam: 5, analyticsEnabled: false, exportEnabled: false, brandingEnabled: false, questionBankEnabled: false };
 exports.ensureFreePlan = () => Plan.findOneAndUpdate({ code: 'FREE' }, { $setOnInsert: { name: 'Free', code: 'FREE', priceMonthly: 0, priceYearly: 0, limits: freeLimits } }, { upsert: true, new: true });
 exports.getLimits = async (organizationId) => {
   const organization = await Organization.findById(organizationId).populate('plan');
   if (!organization) throw new AppError(404, 'Organization not found');
-  const base = organization.plan?.limits?.toObject?.() || freeLimits;
+  const snapshot = organization.planSnapshot;
+  const base = snapshot?.name ? {
+    ...freeLimits,
+    teachersLimit: snapshot.teacherLimit ?? freeLimits.teachersLimit,
+    studentsLimit: snapshot.studentLimit ?? freeLimits.studentsLimit,
+    servicesLimit: snapshot.serviceLimit ?? freeLimits.servicesLimit,
+    batchesLimit: snapshot.batchLimit ?? freeLimits.batchesLimit,
+    examSlotsPerMonth: snapshot.examLimit ?? freeLimits.examSlotsPerMonth,
+  } : (organization.plan?.limits?.toObject?.() || freeLimits);
   if (!organization.permissionOverrides?.enabled) return base;
   const overrides = organization.permissionOverrides.toObject();
   return Object.fromEntries(Object.keys(freeLimits).map((key) => [key, overrides[key] ?? base[key]]));

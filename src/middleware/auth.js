@@ -11,6 +11,10 @@ exports.auth = asyncHandler(async (req, _res, next) => {
   catch (_) { throw new AppError(401, 'Invalid or expired token'); }
   const user = await User.findById(payload.sub);
   if (!user || !user.isActive) throw new AppError(401, 'User account is unavailable');
+  if (!user.lastActiveAt || Date.now() - new Date(user.lastActiveAt).getTime() > 15 * 60 * 1000) {
+    user.lastActiveAt = new Date();
+    user.save().catch(() => {});
+  }
   req.user = user;
   next();
 });

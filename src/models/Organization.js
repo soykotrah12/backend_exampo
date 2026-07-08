@@ -1,5 +1,27 @@
 const mongoose = require('mongoose');
-const override = { enabled: { type: Boolean, default: false }, teachersLimit: Number, studentsLimit: Number, examSlotsPerMonth: Number, questionsPerExam: Number, writtenQuestionsPerExam: Number, analyticsEnabled: Boolean, exportEnabled: Boolean, brandingEnabled: Boolean, questionBankEnabled: Boolean };
+const override = { enabled: { type: Boolean, default: false }, teachersLimit: Number, studentsLimit: Number, servicesLimit: Number, batchesLimit: Number, examSlotsPerMonth: Number, questionsPerExam: Number, writtenQuestionsPerExam: Number, analyticsEnabled: Boolean, exportEnabled: Boolean, brandingEnabled: Boolean, questionBankEnabled: Boolean };
+const planSnapshot = {
+  planId: { type: mongoose.Schema.Types.ObjectId, ref: 'Plan', default: null },
+  name: { type: String, default: '' },
+  code: { type: String, default: '' },
+  billingType: { type: String, default: '' },
+  price: { type: Number, default: 0 },
+  monthlyPrice: { type: Number, default: 0 },
+  yearlyPrice: { type: Number, default: 0 },
+  teacherLimit: { type: Number, default: 0 },
+  studentLimit: { type: Number, default: 0 },
+  serviceLimit: { type: Number, default: 0 },
+  batchLimit: { type: Number, default: 0 },
+  examLimit: { type: Number, default: 0 },
+  features: [{ type: String }],
+  capturedAt: { type: Date, default: Date.now },
+};
+const pendingPlanChange = {
+  plan: { type: mongoose.Schema.Types.ObjectId, ref: 'Plan', default: null },
+  billingCycle: { type: String, default: '' },
+  effectiveAt: { type: Date, default: null },
+  note: { type: String, default: '' },
+};
 module.exports = mongoose.model('Organization', new mongoose.Schema({
   name: { type: String, required: true, trim: true }, owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   email: { type: String, lowercase: true, trim: true, default: '' },
@@ -16,8 +38,16 @@ module.exports = mongoose.model('Organization', new mongoose.Schema({
   teachers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   students: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   services: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Service' }],
-  plan: { type: mongoose.Schema.Types.ObjectId, ref: 'Plan', required: true }, subscriptionStatus: { type: String, enum: ['free', 'active', 'expired', 'cancelled'], default: 'free' },
-  subscriptionStartDate: Date, subscriptionEndDate: Date, permissionOverrides: override, isActive: { type: Boolean, default: true },
+  plan: { type: mongoose.Schema.Types.ObjectId, ref: 'Plan', required: true }, subscriptionStatus: { type: String, enum: ['free', 'active', 'trialing', 'pending', 'expired', 'cancelled', 'refunded'], default: 'free' },
+  subscriptionStartDate: Date, subscriptionEndDate: Date, subscriptionBillingCycle: { type: String, default: '' },
+  subscriptionAmount: { type: Number, default: 0 }, subscriptionPaymentStatus: { type: String, default: '' },
+  subscriptionAdminNote: { type: String, default: '', trim: true, maxlength: 2000 },
+  subscriptionCancelReason: { type: String, default: '', trim: true, maxlength: 1000 },
+  subscriptionCancelledAt: Date, subscriptionCancelAtPeriodEnd: { type: Boolean, default: false },
+  subscriptionRefundMarkedAt: Date, subscriptionRefundAmount: { type: Number, default: 0 },
+  subscriptionRefundReason: { type: String, default: '', trim: true, maxlength: 1000 },
+  subscriptionRefundNote: { type: String, default: '', trim: true, maxlength: 1000 },
+  planSnapshot, pendingPlanChange, permissionOverrides: override, isActive: { type: Boolean, default: true },
   verificationStatus: { type: String, enum: ['unverified', 'pending', 'verified', 'rejected'], default: 'unverified' },
   verificationDocumentUrl: { type: String, default: '' },
   verificationSubmittedAt: Date,

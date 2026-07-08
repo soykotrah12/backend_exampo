@@ -24,6 +24,10 @@ const schema = new mongoose.Schema({
   avatarUrl: { type: String, default: '' },
   invitedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   isActive: { type: Boolean, default: true },
+  deletedAt: { type: Date, default: null },
+  deletedEmail: { type: String, default: '', trim: true },
+  lastLoginAt: { type: Date, default: null },
+  lastActiveAt: { type: Date, default: null },
   tokenVersion: { type: Number, default: 0 },
 }, { timestamps: true });
 schema.pre('save', async function hash(next) {
