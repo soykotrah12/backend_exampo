@@ -12,6 +12,12 @@ app.use(express.json({ limit: '1mb' }));
 app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 app.get('/health', (_req, res) => res.json({ success: true, data: { status: 'ok' } }));
 app.use('/api', routes);
+app.get("/", (req, res) => {
+  return res.status(200).json({
+    success: true,
+    message: "Backend server is running successfully",
+  });
+});
 app.use(notFound);
 app.use(errorHandler);
 
