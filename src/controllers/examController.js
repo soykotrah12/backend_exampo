@@ -96,13 +96,27 @@ exports.accessOptions = asyncHandler(async (req, res) => {
     },
   });
 });
-exports.getManaged = asyncHandler(async (req, res) => { const slot = await slotForManage(req.params.id, req.user); const questions = await Question.find({ examSlot: slot._id }).sort({ order: 1 }); res.json({ success: true, data: { ...slot.toObject(), questions } }); });
+exports.getManaged = asyncHandler(async (req, res) => { const slot = await slotForManage(req.params.id, req.user); const [questions, submissionCount] = await Promise.all([Question.find({ examSlot: slot._id }).sort({ order: 1 }), Submission.countDocuments({ examSlot: slot._id })]); res.json({ success: true, data: { ...slot.toObject(), questions, submissionCount, totalQuestions: questions.length } }); });
 exports.listQuestions = asyncHandler(async (req, res) => { const slot = await slotForManage(req.params.id, req.user); res.json({ success: true, data: await Question.find({ examSlot: slot._id }).select('+answerGuideline').sort({ questionNo: 1 }) }); });
 exports.getQuestion = asyncHandler(async (req, res) => { const question = await Question.findById(req.params.questionId).select('+answerGuideline'); if (!question) throw new AppError(404, 'Question not found'); await slotForManage(question.examSlot, req.user); res.json({ success: true, data: question }); });
 exports.updateSlot = asyncHandler(async (req, res) => {
   const slot = await slotForManage(req.params.id, req.user);
   if (await Submission.exists({ examSlot: slot._id })) throw new AppError(409, 'This exam has submissions and can no longer be edited');
   const body = normalizeCategories(req.body);
+  if (body.accessScope && !['selected_students','selected_batches','whole_organization'].includes(body.accessScope)) throw new AppError(400, 'Invalid access scope');
+  if (req.user.role === 'teacher' && body.accessScope === 'whole_organization') throw new AppError(403, 'Teachers can assign exams only to selected students or assigned batches');
+  if (body.assignedStudents !== undefined) {
+    const studentIds = [...new Set(body.assignedStudents || [])];
+    const count = await User.countDocuments({ _id: { $in: studentIds }, role: 'student', organization: slot.organization });
+    if (count !== studentIds.length) throw new AppError(403, 'Every assigned student must belong to your organization');
+    body.assignedStudents = studentIds;
+  }
+  if (body.assignedBatches !== undefined) {
+    const batchIds = [...new Set(body.assignedBatches || [])];
+    const count = await Batch.countDocuments({ _id: { $in: batchIds }, organization: slot.organization, isActive: true });
+    if (count !== batchIds.length) throw new AppError(403, 'Every assigned batch must belong to your organization');
+    body.assignedBatches = batchIds;
+  }
   const allowed = ['title','description','category','mainCategory','subCategory','examType','startDateTime','durationMinutes','instructions','passingMarks','status','resultVisibilityMode','showCorrectAnswers','showQuestionReview','accessScope','assignedStudents','assignedBatches','service'];
   allowed.forEach((key) => { if (body[key] !== undefined) slot[key] = body[key]; });
   if (req.body.serviceId !== undefined) slot.service = req.body.serviceId || undefined;
@@ -112,7 +126,7 @@ exports.updateSlot = asyncHandler(async (req, res) => {
   const start = new Date(slot.startDateTime); const duration = Number(slot.durationMinutes);
   if (Number.isNaN(start.getTime()) || !Number.isFinite(duration) || duration <= 0) throw new AppError(400, 'Start time and positive duration are required');
   slot.endDateTime = new Date(start.getTime() + duration * 60 * 1000);
-  await slot.save(); res.json({ success: true, message: 'Exam updated', data: slot });
+  await slot.save(); res.json({ success: true, message: 'Exam slot updated successfully', data: slot });
 });
 exports.deleteSlot = asyncHandler(async (req, res) => {
   const slot = await slotForManage(req.params.id, req.user);
@@ -131,7 +145,7 @@ exports.addQuestion = asyncHandler(async (req, res) => {
 exports.updateQuestion = asyncHandler(async (req, res) => {
   const question = await Question.findById(req.params.questionId); if (!question) throw new AppError(404, 'Question not found');
   const slot = await slotForManage(question.examSlot, req.user); await assertQuestionEditable(slot);
-  const oldMarks = question.marks; Object.assign(question, questionShape(req.body, slot)); await question.save(); slot.totalMarks += question.marks - oldMarks; await slot.save();
+  const oldMarks = question.marks; Object.assign(question, questionShape({ ...req.body, questionNo: req.body.questionNo ?? question.questionNo }, slot)); await question.save(); slot.totalMarks += question.marks - oldMarks; await slot.save();
   res.json({ success: true, message: 'Question updated', data: question });
 });
 exports.deleteQuestion = asyncHandler(async (req, res) => {

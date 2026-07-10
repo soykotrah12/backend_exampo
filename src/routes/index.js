@@ -42,6 +42,7 @@ router.patch('/organizations/teachers/:teacherId/reactivate', auth, allowRoles('
 router.patch('/organizations/teachers/:teacherId/remove', auth, allowRoles('organization_owner'), organization.removeTeacher);
 router.delete('/organizations/teachers/:teacherId/remove', auth, allowRoles('organization_owner'), organization.removeTeacher);
 router.post('/organizations/join-by-code', auth, allowRoles('student'), organization.joinByCode);
+router.patch('/organizations/leave', auth, allowRoles('student'), organization.leave);
 router.post('/teacher-requests/join-organization', auth, allowRoles('teacher'), teacherRequests.joinOrganization);
 router.get('/teacher-requests/organization', auth, allowRoles('organization_owner'), teacherRequests.organizationRequests);
 router.patch('/teacher-requests/:id/accept', auth, allowRoles('organization_owner'), teacherRequests.review('accepted'));
@@ -61,6 +62,7 @@ router.get('/organization/students', ...staff, organization.students);
 router.post('/batches', ...staff, batch.create);
 router.get('/batches', auth, batch.list);
 router.post('/batches/join-by-code', auth, allowRoles('student'), batch.joinByCode);
+router.patch('/batches/:id/leave', auth, allowRoles('student'), batch.leave);
 router.get('/batches/:id', ...staff, batch.get);
 router.get('/batches/:id/exam-slots', ...staff, batch.examSlots);
 router.patch('/batches/:id', ...staff, batch.update);

@@ -61,7 +61,7 @@ exports.get = asyncHandler(async (req, res) => {
   await batch.populate('organization', 'name organizationCode');
   await batch.populate('service', 'name color icon');
   const value = batch.toObject();
-  res.json({ success: true, data: { ...value, serviceName: value.service?.name || '', studentCount: batch.students.length } });
+  res.json({ success: true, message: 'Batch fetched successfully', data: { ...value, serviceName: value.service?.name || '', studentCount: batch.students.length } });
 });
 exports.update = asyncHandler(async (req, res) => {
   ownerOnly(req.user);
@@ -108,16 +108,27 @@ exports.examSlots = asyncHandler(async (req, res) => {
     { title: { $regex: String(req.query.search), $options: 'i' } },
     { category: { $regex: String(req.query.search), $options: 'i' } },
   ];
-  const slots = await ExamSlot.find(query).populate('assignedBatches', 'name batchCode').populate('service', 'name color icon').sort({ startDateTime: 1 }).lean();
-  const data = await Promise.all(slots.map(async (slot) => ({
-    ...slot,
-    serviceName: slot.service?.name || '',
-    batchNames: (slot.assignedBatches || []).map((item) => item.name),
-    totalQuestions: await Question.countDocuments({ examSlot: slot._id }),
-    assignedStudentsCount: slot.assignedStudents.length,
-    submissionCount: await Submission.countDocuments({ examSlot: slot._id }),
-  })));
-  res.json({ success: true, data });
+  const slots = await ExamSlot.find(query)
+    .select('title category mainCategory subCategory examType startDateTime endDateTime durationMinutes status assignedStudents assignedBatches service resultVisibilityMode resultPublished showCorrectAnswers showQuestionReview')
+    .populate('assignedBatches', 'name batchCode')
+    .populate('service', 'name color icon')
+    .sort({ startDateTime: 1 })
+    .lean();
+  const data = await Promise.all(slots.map(async (slot) => {
+    const [totalQuestions, submissionCount] = await Promise.all([
+      Question.countDocuments({ examSlot: slot._id }),
+      Submission.countDocuments({ examSlot: slot._id }),
+    ]);
+    return {
+      ...slot,
+      serviceName: slot.service?.name || '',
+      batchNames: (slot.assignedBatches || []).map((item) => item.name),
+      totalQuestions,
+      assignedStudentsCount: (slot.assignedStudents || []).length,
+      submissionCount,
+    };
+  }));
+  res.json({ success: true, message: 'Exam slots fetched successfully', data });
 });
 
 exports.joinByCode = asyncHandler(async (req, res) => {
@@ -135,4 +146,17 @@ exports.joinByCode = asyncHandler(async (req, res) => {
   organization.students.addToSet(req.user._id);
   await Promise.all([req.user.save(), batch.save(), organization.save()]);
   res.json({ success: true, message: 'Batch joined successfully', data: batch });
+});
+
+exports.leave = asyncHandler(async (req, res) => {
+  const batch = await Batch.findOne({ _id: req.params.id, students: req.user._id });
+  if (!batch) throw new AppError(404, 'You have not joined this batch');
+  req.user.batches.pull(batch._id);
+  batch.students.pull(req.user._id);
+  await Promise.all([req.user.save(), batch.save()]);
+  res.json({
+    success: true,
+    message: 'Left batch successfully',
+    data: { batchId: batch._id },
+  });
 });

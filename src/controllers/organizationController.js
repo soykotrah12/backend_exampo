@@ -4,6 +4,7 @@ const Service = require('../models/Service');
 const Batch = require('../models/Batch');
 const ExamSlot = require('../models/ExamSlot');
 const Submission = require('../models/Submission');
+const AccessRequest = require('../models/AccessRequest');
 const TeacherJoinRequest = require('../models/TeacherJoinRequest');
 const fs = require('fs/promises');
 const path = require('path');
@@ -214,6 +215,33 @@ exports.joinByCode = asyncHandler(async (req, res) => {
   organization.students.addToSet(req.user._id);
   await Promise.all([req.user.save(), organization.save()]);
   res.json({ success: true, message: 'Organization joined successfully', data: organization });
+});
+
+exports.leave = asyncHandler(async (req, res) => {
+  if (!req.user.organization) throw new AppError(409, 'You have not joined an organization');
+  const organizationId = req.user.organization;
+  const joinedBatchIds = await Batch.find({
+    organization: organizationId,
+    $or: [
+      { students: req.user._id },
+      { _id: { $in: req.user.batches || [] } },
+    ],
+  }).distinct('_id');
+  req.user.organization = null;
+  req.user.batches = (req.user.batches || []).filter((id) => !joinedBatchIds.some((batchId) => String(batchId) === String(id)));
+  req.user.joinedOrganizations = (req.user.joinedOrganizations || []).filter((id) => String(id) !== String(organizationId));
+  await Promise.all([
+    req.user.save(),
+    Organization.updateOne({ _id: organizationId }, { $pull: { students: req.user._id } }),
+    Batch.updateMany({ organization: organizationId }, { $pull: { students: req.user._id } }),
+    ExamSlot.updateMany({ organization: organizationId }, { $pull: { assignedStudents: req.user._id } }),
+    AccessRequest.deleteMany({ organization: organizationId, student: req.user._id }),
+  ]);
+  res.json({
+    success: true,
+    message: 'Left organization successfully',
+    data: { organizationId, removedBatchIds: joinedBatchIds },
+  });
 });
 
 exports.dashboardSummary = asyncHandler(async (req, res) => {

@@ -96,5 +96,11 @@ exports.login = asyncHandler(async (req, res) => {
   await user.save();
   res.json({ success: true, message: 'Logged in', data: authPayload(user) });
 });
-exports.me = asyncHandler(async (req, res) => res.json({ success: true, data: req.user.toSafeJSON() }));
+exports.me = asyncHandler(async (req, res) => {
+  const data = req.user.toSafeJSON();
+  if (data.avatarUrl && String(data.avatarUrl).startsWith('/')) {
+    data.avatarUrl = `${req.protocol}://${req.get('host')}${data.avatarUrl}`;
+  }
+  res.json({ success: true, data });
+});
 exports.logout = (_req, res) => res.json({ success: true, message: 'Logged out' });
