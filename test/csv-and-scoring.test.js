@@ -32,3 +32,35 @@ test('scores mixed true/false and single best submissions', () => {
   assert.equal(result.mcqScore, 7);
   assert.equal(result.answers.length, 2);
 });
+
+test('awards dynamic partial marks and stores true/false scoring details', () => {
+  const id = (value) => ({ toString: () => value });
+  const question = (name, marks, count) => ({
+    _id: id(name), type: 'TRUE_FALSE_GROUP', marks,
+    statements: Array.from({ length: count }, (_, index) => ({ label: String.fromCharCode(65 + index), correctAnswer: true })),
+  });
+  const score = (q, correct) => scoring.validateAndScore([q], [{
+    questionId: q._id.toString(), type: 'TRUE_FALSE_GROUP',
+    answers: Object.fromEntries(q.statements.map((item, index) => [item.label, index < correct])),
+  }]);
+
+  const threeOfFive = score(question('one', 1, 5), 3);
+  assert.equal(threeOfFive.mcqScore, 0.6);
+  assert.deepEqual(
+    { correctCount: threeOfFive.answers[0].correctCount, totalStatements: threeOfFive.answers[0].totalStatements, earnedMarks: threeOfFive.answers[0].earnedMarks, totalMarks: threeOfFive.answers[0].totalMarks },
+    { correctCount: 3, totalStatements: 5, earnedMarks: 0.6, totalMarks: 1 },
+  );
+  assert.equal(score(question('two', 2, 5), 4).mcqScore, 1.6);
+  assert.equal(score(question('three', 1, 4), 2).mcqScore, 0.5);
+  assert.equal(score(question('four', 5, 5), 5).mcqScore, 5);
+});
+
+test('true/false scoring safely defaults missing marks and handles no statements', () => {
+  const id = (value) => ({ toString: () => value });
+  const missingMarks = { _id: id('missing'), type: 'TRUE_FALSE_GROUP', statements: [{ label: 'A', correctAnswer: true }] };
+  assert.equal(scoring.validateAndScore([missingMarks], [{ questionId: 'missing', type: 'TRUE_FALSE_GROUP', answers: { A: true } }]).mcqScore, 1);
+  const empty = { _id: id('empty'), type: 'TRUE_FALSE_GROUP', marks: 1, statements: [] };
+  const result = scoring.validateAndScore([empty], [{ questionId: 'empty', type: 'TRUE_FALSE_GROUP', answers: {} }]);
+  assert.equal(result.mcqScore, 0);
+  assert.equal(result.answers[0].totalStatements, 0);
+});

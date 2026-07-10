@@ -67,6 +67,7 @@ router.patch('/batches/:id', ...staff, batch.update);
 router.patch('/batches/:id/deactivate', ...staff, batch.deactivate);
 router.delete('/batches/:id', ...staff, batch.remove);
 router.get('/exam-slots', ...staff, exam.listManaged);
+router.get('/exam-slots/access-options', ...staff, exam.accessOptions);
 router.get('/exam-slots/question-import/sample/true-false-csv', ...staff, exam.sampleCsv('trueFalse'));
 router.get('/exam-slots/question-import/sample/single-best-csv', ...staff, exam.sampleCsv('singleBest'));
 router.get('/exam-slots/:id', ...staff, exam.getManaged);

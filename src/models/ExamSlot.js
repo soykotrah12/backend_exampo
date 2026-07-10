@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 module.exports = mongoose.model('ExamSlot', new mongoose.Schema({
   title: { type: String, required: true, trim: true }, description: { type: String, default: '' }, category: { type: String, required: true },
+  mainCategory: { type: String, trim: true, default: '' }, subCategory: { type: String, trim: true, default: '' },
   examType: { type: String, enum: ['mcq','written','both'], required: true }, startDateTime: { type: Date, required: true }, endDateTime: { type: Date, required: true }, durationMinutes: { type: Number, required: true, min: 1 },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }, organization: { type: mongoose.Schema.Types.ObjectId, ref: 'Organization', required: true, index: true },
   service: { type: mongoose.Schema.Types.ObjectId, ref: 'Service', index: true },

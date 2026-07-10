@@ -15,6 +15,20 @@ const assertQuestionEditable = async (slot) => {
   if (new Date() >= slot.startDateTime) throw new AppError(409, 'Questions cannot be changed after the exam starts');
 };
 
+const categoryMain = (category) => {
+  if (['Nursing Licensing Exam','BSc Nursing Exam','Diploma Nursing Exam','MBBS','Pharmacy','Medical Assistant','Custom Medical Exam'].includes(category)) return 'Medical';
+  if (['University Exam','Admission Test','Semester Exam','Department Exam','Final Exam','Custom University Exam'].includes(category)) return 'University';
+  if (['School Exam','College Exam','SSC','HSC','Class Test','Model Test','Board Exam','Custom School/College Exam'].includes(category)) return 'School/College';
+  return category ? 'Custom' : '';
+};
+const normalizeCategories = (body) => {
+  const value = { ...body };
+  if (value.subCategory) value.category = value.subCategory;
+  if (!value.subCategory && value.category) value.subCategory = value.category;
+  if (!value.mainCategory && value.category) value.mainCategory = categoryMain(value.category);
+  return value;
+};
+
 const slotForManage = async (id, user) => { const slot = await ExamSlot.findById(id); if (!slot) throw new AppError(404, 'Exam slot not found'); access.assertManage(slot, user); return slot; };
 const questionShape = (body, slot) => {
   const value = { examSlot: slot._id, organization: slot.organization, questionNo: Number(body.questionNo), type: body.type, questionText: String(body.questionText).trim(), marks: body.marks, wordLimit: body.wordLimit, answerGuideline: body.answerGuideline, order: body.questionNo ?? body.order };
@@ -40,7 +54,8 @@ exports.createSlot = asyncHandler(async (req, res) => {
     access.assertAssignedService(req.user, service._id);
   }
   const end = new Date(start.getTime() + duration * 60 * 1000);
-  const slot = await ExamSlot.create({ ...req.body, service: service?._id, startDateTime: start, endDateTime: end, durationMinutes: duration, organization: req.user.organization, createdBy: req.user._id, assignedStudents: [], assignedBatches: [] });
+  const normalized = normalizeCategories(req.body);
+  const slot = await ExamSlot.create({ ...normalized, service: service?._id, startDateTime: start, endDateTime: end, durationMinutes: duration, organization: req.user.organization, createdBy: req.user._id, assignedStudents: [], assignedBatches: [] });
   res.status(201).json({ success: true, message: 'Exam slot created', data: slot });
 });
 exports.listManaged = asyncHandler(async (req, res) => {
@@ -50,14 +65,46 @@ exports.listManaged = asyncHandler(async (req, res) => {
   const data = await Promise.all(slots.map(async (slot) => ({ ...slot, serviceName: slot.service?.name || '', batchNames: (slot.assignedBatches || []).map((x) => x.name), totalQuestions: await Question.countDocuments({ examSlot: slot._id }), assignedStudentsCount: slot.assignedStudents.length, submissionCount: await Submission.countDocuments({ examSlot: slot._id }) })));
   res.json({ success: true, data });
 });
+exports.accessOptions = asyncHandler(async (req, res) => {
+  access.assertTeacherAccepted(req.user);
+  if (!req.user.organization) {
+    return res.json({
+      success: true,
+      message: 'Access options fetched successfully',
+      data: { batches: [], students: [] },
+    });
+  }
+  const batchQuery = { organization: req.user.organization, isActive: true };
+  if (req.user.role === 'teacher') batchQuery._id = { $in: req.user.assignedBatches || [] };
+  const batches = await Batch.find(batchQuery)
+    .select('name batchCode service students isActive')
+    .populate('service', 'name')
+    .sort({ name: 1 })
+    .lean();
+  const studentQuery = { organization: req.user.organization, role: 'student', isActive: true };
+  if (req.user.role === 'teacher') studentQuery.batches = { $in: batches.map((batch) => batch._id) };
+  const students = await User.find(studentQuery)
+    .select('name email batches')
+    .sort({ name: 1 })
+    .lean();
+  res.json({
+    success: true,
+    message: 'Access options fetched successfully',
+    data: {
+      batches: batches.map((batch) => ({ ...batch, serviceName: batch.service?.name || '', studentCount: (batch.students || []).length })),
+      students,
+    },
+  });
+});
 exports.getManaged = asyncHandler(async (req, res) => { const slot = await slotForManage(req.params.id, req.user); const questions = await Question.find({ examSlot: slot._id }).sort({ order: 1 }); res.json({ success: true, data: { ...slot.toObject(), questions } }); });
 exports.listQuestions = asyncHandler(async (req, res) => { const slot = await slotForManage(req.params.id, req.user); res.json({ success: true, data: await Question.find({ examSlot: slot._id }).select('+answerGuideline').sort({ questionNo: 1 }) }); });
 exports.getQuestion = asyncHandler(async (req, res) => { const question = await Question.findById(req.params.questionId).select('+answerGuideline'); if (!question) throw new AppError(404, 'Question not found'); await slotForManage(question.examSlot, req.user); res.json({ success: true, data: question }); });
 exports.updateSlot = asyncHandler(async (req, res) => {
   const slot = await slotForManage(req.params.id, req.user);
   if (await Submission.exists({ examSlot: slot._id })) throw new AppError(409, 'This exam has submissions and can no longer be edited');
-  const allowed = ['title','description','category','examType','startDateTime','durationMinutes','instructions','passingMarks','status','resultVisibilityMode','showCorrectAnswers','showQuestionReview','accessScope','assignedStudents','assignedBatches','service'];
-  allowed.forEach((key) => { if (req.body[key] !== undefined) slot[key] = req.body[key]; });
+  const body = normalizeCategories(req.body);
+  const allowed = ['title','description','category','mainCategory','subCategory','examType','startDateTime','durationMinutes','instructions','passingMarks','status','resultVisibilityMode','showCorrectAnswers','showQuestionReview','accessScope','assignedStudents','assignedBatches','service'];
+  allowed.forEach((key) => { if (body[key] !== undefined) slot[key] = body[key]; });
   if (req.body.serviceId !== undefined) slot.service = req.body.serviceId || undefined;
   if (slot.service && !(await Service.exists({ _id: slot.service, organization: slot.organization, isActive: true }))) throw new AppError(404, 'Active service not found');
   access.assertAssignedService(req.user, slot.service);

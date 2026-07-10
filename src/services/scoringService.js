@@ -12,10 +12,19 @@ exports.validateAndScore = (questions, submittedAnswers) => {
     const result = { questionId: question._id, type: question.type, awardedMarks: 0 };
     if (question.type === 'TRUE_FALSE_GROUP') {
       const values = raw.answers || {};
-      if (Object.keys(values).some((key) => !['A','B','C','D','E'].includes(key) || typeof values[key] !== 'boolean')) throw new AppError(400, 'Invalid true/false answer');
+      const statements = Array.isArray(question.statements) ? question.statements : [];
+      const labels = new Set(statements.map((item) => item.label));
+      if (Object.keys(values).some((key) => !labels.has(key) || typeof values[key] !== 'boolean')) throw new AppError(400, 'Invalid true/false answer');
       result.answers = values;
-      const correctCount = question.statements.filter((item) => values[item.label] === item.correctAnswer).length;
-      result.awardedMarks = Number(((question.marks * correctCount) / question.statements.length).toFixed(2));
+      const totalMarks = Number.isFinite(Number(question.marks)) ? Number(question.marks) : 1;
+      const totalStatements = statements.length;
+      const correctCount = statements.filter((item) => values[item.label] === item.correctAnswer).length;
+      const earnedMarks = totalStatements > 0 ? (totalMarks / totalStatements) * correctCount : 0;
+      result.correctCount = correctCount;
+      result.totalStatements = totalStatements;
+      result.totalMarks = totalMarks;
+      result.earnedMarks = Number(earnedMarks.toFixed(6));
+      result.awardedMarks = result.earnedMarks;
       mcqScore += result.awardedMarks;
     } else if (question.type === 'SINGLE_BEST_ANSWER') {
       if (!question.options.some((item) => item.label === raw.selectedOption)) throw new AppError(400, 'Invalid selected option');
@@ -29,5 +38,5 @@ exports.validateAndScore = (questions, submittedAnswers) => {
     }
     return result;
   });
-  return { answers, mcqScore };
+  return { answers, mcqScore: Number(mcqScore.toFixed(6)) };
 };

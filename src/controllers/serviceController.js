@@ -60,13 +60,32 @@ exports.list = asyncHandler(async (req, res) => {
 
 exports.get = asyncHandler(async (req, res) => {
   const service = await managed(req.params.id, req.user);
-  const batches = await Batch.find({ service: service._id }).populate('students', 'name email').sort({ isActive: -1, createdAt: -1 }).lean();
-  const exams = await ExamSlot.find({ service: service._id }).populate('assignedBatches', 'name batchCode').sort({ startDateTime: 1 }).lean();
+  const batchQuery = { service: service._id };
+  if (req.user.role === 'teacher') batchQuery._id = { $in: req.user.assignedBatches || [] };
+  const batches = await Batch.find(batchQuery).populate('students', 'name email').sort({ isActive: -1, createdAt: -1 }).lean();
+  const exams = await ExamSlot.find({ service: service._id, ...access.teacherExamQuery(req.user) }).populate('assignedBatches', 'name batchCode').sort({ startDateTime: 1 }).lean();
+  const now = new Date();
+  const batchStats = new Map(batches.map((batch) => [String(batch._id), { examsCount: 0, upcomingExamsCount: 0 }]));
+  exams.forEach((exam) => {
+    (exam.assignedBatches || []).forEach((batch) => {
+      const value = batchStats.get(String(batch._id || batch));
+      if (!value) return;
+      value.examsCount += 1;
+      if (exam.startDateTime > now && ['draft','published'].includes(exam.status)) value.upcomingExamsCount += 1;
+    });
+  });
+  const stats = await withStats(service);
+  if (req.user.role === 'teacher') {
+    stats.totalBatches = batches.length;
+    stats.totalStudents = new Set(batches.flatMap((batch) => (batch.students || []).map((student) => String(student._id || student)))).size;
+    stats.totalExams = exams.length;
+  }
   res.json({
     success: true,
+    message: 'Service details fetched successfully',
     data: {
-      ...(await withStats(service)),
-      batches: batches.map((batch) => ({ ...batch, studentCount: batch.students.length })),
+      ...stats,
+      batches: batches.map((batch) => ({ ...batch, studentCount: batch.students.length, ...(batchStats.get(String(batch._id)) || { examsCount: 0, upcomingExamsCount: 0 }) })),
       exams: exams.map((exam) => ({ ...exam, batchNames: (exam.assignedBatches || []).map((batch) => batch.name) })),
     },
   });
