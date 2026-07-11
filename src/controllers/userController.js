@@ -1,9 +1,8 @@
 const User = require('../models/User');
-const fs = require('fs/promises');
-const path = require('path');
 const asyncHandler = require('../utils/asyncHandler');
 const AppError = require('../utils/AppError');
 const permissions = require('../services/permissionService');
+const avatarStorage = require('../services/avatarStorageService');
 
 exports.updateMe = asyncHandler(async (req, res) => {
   const allowed = ['name','bio','location','avatarUrl','phone','contactNumber','address'];
@@ -12,17 +11,35 @@ exports.updateMe = asyncHandler(async (req, res) => {
 });
 
 exports.uploadAvatar = asyncHandler(async (req, res) => {
-  if (!Buffer.isBuffer(req.body) || req.body.length === 0) throw new AppError(400, 'Select an image to upload');
-  const contentType = String(req.headers['content-type'] || '').toLowerCase();
-  const ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : contentType.includes('jpeg') || contentType.includes('jpg') ? 'jpg' : '';
-  if (!ext) throw new AppError(400, 'Only JPEG, PNG, and WEBP profile images are accepted');
-  const dir = path.join(__dirname, '..', '..', 'uploads', 'avatars');
-  await fs.mkdir(dir, { recursive: true });
-  const fileName = `${req.user._id}-${Date.now()}.${ext}`;
-  await fs.writeFile(path.join(dir, fileName), req.body);
-  req.user.avatarUrl = `${req.protocol}://${req.get('host')}/uploads/avatars/${fileName}`;
+  const uploadedFile = req.file;
+  const buffer = uploadedFile?.buffer || req.body;
+  const contentType = String(uploadedFile?.mimetype || req.headers['content-type'] || '').toLowerCase();
+
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) throw new AppError(400, 'Select an image to upload');
+  if (!contentType.startsWith('image/')) throw new AppError(400, 'Only image files are accepted');
+
+  const previousAvatarUrl = req.user.avatarUrl;
+  const { avatarUrl } = await avatarStorage.uploadAvatarBuffer({
+    userId: req.user._id.toString(),
+    buffer,
+    contentType,
+    originalName: uploadedFile?.originalname,
+  });
+
+  req.user.avatarUrl = avatarUrl;
   await req.user.save();
-  res.json({ success: true, message: 'Profile photo updated', data: req.user.toSafeJSON() });
+  await avatarStorage.deleteAvatarIfOwned(previousAvatarUrl);
+
+  const user = req.user.toSafeJSON();
+  res.json({
+    success: true,
+    message: 'Avatar uploaded successfully',
+    data: {
+      ...user,
+      avatarUrl: user.avatarUrl,
+      user,
+    },
+  });
 });
 
 exports.invite = asyncHandler(async (req, res) => {

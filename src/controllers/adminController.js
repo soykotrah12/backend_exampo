@@ -224,10 +224,10 @@ exports.dashboardSummary = asyncHandler(async (_req, res) => {
     Organization.countDocuments({ verificationStatus: 'pending' }),
     PaymentRequest.countDocuments({ status: 'pending' }),
     Organization.countDocuments({ subscriptionStatus: 'active' }),
-    Organization.find().select(organizationFields).populate('owner', 'name email').populate('plan', 'name code').sort({ createdAt: -1 }).limit(6).lean(),
+    Organization.find().select(organizationFields).populate('owner', 'name email avatarUrl').populate('plan', 'name code').sort({ createdAt: -1 }).limit(6).lean(),
     User.find().select(userFields).populate('organization', 'name organizationCode').sort({ createdAt: -1 }).limit(6).lean(),
-    ExamSlot.find().populate('organization', 'name').populate('createdBy', 'name email').sort({ createdAt: -1 }).limit(6).lean(),
-    Submission.find().populate('student', 'name email').populate('examSlot', 'title').populate('organization', 'name').sort({ submittedAt: -1 }).limit(6).lean(),
+    ExamSlot.find().populate('organization', 'name').populate('createdBy', 'name email avatarUrl').sort({ createdAt: -1 }).limit(6).lean(),
+    Submission.find().populate('student', 'name email avatarUrl').populate('examSlot', 'title').populate('organization', 'name').sort({ submittedAt: -1 }).limit(6).lean(),
   ]);
   res.json({
     success: true,
@@ -297,8 +297,8 @@ exports.organizationDetails = asyncHandler(async (req, res) => {
     User.find({ organization: req.params.id, role: 'student' }).select(userFields).limit(100).lean(),
     Service.find({ organization: req.params.id }).limit(100).lean(),
     Batch.find({ organization: req.params.id }).populate('service', 'name').limit(100).lean(),
-    ExamSlot.find({ organization: req.params.id }).populate('createdBy', 'name email').populate('service', 'name').limit(100).lean(),
-    Submission.find({ organization: req.params.id }).populate('student', 'name email').populate('examSlot', 'title').limit(100).lean(),
+    ExamSlot.find({ organization: req.params.id }).populate('createdBy', 'name email avatarUrl').populate('service', 'name').limit(100).lean(),
+    Submission.find({ organization: req.params.id }).populate('student', 'name email avatarUrl').populate('examSlot', 'title').limit(100).lean(),
   ]);
   res.json({ success: true, data: { ...withCounts, teachers, students, services, batches, exams, submissions } });
 });
@@ -456,8 +456,8 @@ exports.serviceDetails = asyncHandler(async (req, res) => {
   const item = await Service.findById(req.params.id).populate('organization', 'name organizationCode').lean();
   if (!item) throw new AppError(404, 'Service not found');
   const [batches, exams] = await Promise.all([
-    Batch.find({ service: item._id }).populate('assignedTeachers', 'name email').limit(100).lean(),
-    ExamSlot.find({ service: item._id }).populate('createdBy', 'name email').limit(100).lean(),
+    Batch.find({ service: item._id }).populate('assignedTeachers', 'name email avatarUrl').limit(100).lean(),
+    ExamSlot.find({ service: item._id }).populate('createdBy', 'name email avatarUrl').limit(100).lean(),
   ]);
   res.json({ success: true, data: { ...item, batches, exams } });
 });
@@ -489,7 +489,7 @@ exports.batches = asyncHandler(async (req, res) => {
 exports.batchDetails = asyncHandler(async (req, res) => {
   const item = await Batch.findById(req.params.id).populate('organization', 'name organizationCode').populate('service', 'name').populate('students', 'name email avatarUrl').populate('assignedTeachers', 'name email avatarUrl').lean();
   if (!item) throw new AppError(404, 'Batch not found');
-  const exams = await ExamSlot.find({ assignedBatches: item._id }).populate('createdBy', 'name email').lean();
+  const exams = await ExamSlot.find({ assignedBatches: item._id }).populate('createdBy', 'name email avatarUrl').lean();
   res.json({ success: true, data: { ...item, exams } });
 });
 
@@ -506,7 +506,7 @@ exports.exams = asyncHandler(async (req, res) => {
   if (req.query.status) query.status = req.query.status;
   if (req.query.examType) query.examType = req.query.examType;
   if (req.query.search) query.title = new RegExp(escapeRegex(req.query.search), 'i');
-  const data = await paged(ExamSlot, query, req, { populate: [{ path: 'organization', select: 'name organizationCode' }, { path: 'service', select: 'name' }, { path: 'assignedBatches', select: 'name batchCode' }, { path: 'createdBy', select: 'name email' }] });
+  const data = await paged(ExamSlot, query, req, { populate: [{ path: 'organization', select: 'name organizationCode' }, { path: 'service', select: 'name' }, { path: 'assignedBatches', select: 'name batchCode' }, { path: 'createdBy', select: 'name email avatarUrl' }] });
   const ids = data.items.map((item) => item._id);
   const counts = await Submission.aggregate([{ $match: { examSlot: { $in: ids } } }, { $group: { _id: '$examSlot', submissionsCount: { $sum: 1 } } }]);
   const map = new Map(counts.map((row) => [String(row._id), row.submissionsCount]));
@@ -515,9 +515,9 @@ exports.exams = asyncHandler(async (req, res) => {
 });
 
 exports.examDetails = asyncHandler(async (req, res) => {
-  const item = await ExamSlot.findById(req.params.id).populate('organization', 'name organizationCode').populate('service', 'name').populate('assignedBatches', 'name batchCode').populate('createdBy', 'name email').lean();
+  const item = await ExamSlot.findById(req.params.id).populate('organization', 'name organizationCode').populate('service', 'name').populate('assignedBatches', 'name batchCode').populate('createdBy', 'name email avatarUrl').lean();
   if (!item) throw new AppError(404, 'Exam not found');
-  const submissions = await Submission.find({ examSlot: item._id }).populate('student', 'name email').limit(100).lean();
+  const submissions = await Submission.find({ examSlot: item._id }).populate('student', 'name email avatarUrl').limit(100).lean();
   res.json({ success: true, data: { ...item, submissions } });
 });
 
@@ -632,7 +632,7 @@ exports.subscriptions = asyncHandler(async (req, res) => {
     const regex = new RegExp(escapeRegex(req.query.search), 'i');
     query.$or = [{ name: regex }, { email: regex }, { organizationCode: regex }];
   }
-  const data = await paged(Organization, query, req, { select: organizationFields, populate: [{ path: 'plan' }, { path: 'owner', select: 'name email' }] });
+  const data = await paged(Organization, query, req, { select: organizationFields, populate: [{ path: 'plan' }, { path: 'owner', select: 'name email avatarUrl' }] });
   res.json({ success: true, data });
 });
 
@@ -684,7 +684,7 @@ exports.changeSubscriptionPlan = asyncHandler(async (req, res) => {
     if (req.body.endDate) update.subscriptionEndDate = req.body.endDate;
     update.pendingPlanChange = {};
   }
-  const item = await Organization.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).populate('plan').populate('owner', 'name email');
+  const item = await Organization.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).populate('plan').populate('owner', 'name email avatarUrl');
   if (!item) throw new AppError(404, 'Subscription not found');
   res.json({ success: true, message: apply === 'later' ? 'Plan change scheduled' : 'Plan changed', data: item });
 });
@@ -702,7 +702,7 @@ exports.cancelSubscription = asyncHandler(async (req, res) => {
     update.subscriptionRefundMarkedAt = new Date();
     update.subscriptionRefundReason = update.subscriptionCancelReason;
   }
-  const item = await Organization.findByIdAndUpdate(req.params.id, update, { new: true }).populate('plan').populate('owner', 'name email');
+  const item = await Organization.findByIdAndUpdate(req.params.id, update, { new: true }).populate('plan').populate('owner', 'name email avatarUrl');
   if (!item) throw new AppError(404, 'Subscription not found');
   res.json({ success: true, message: 'Subscription cancelled', data: item });
 });
@@ -715,7 +715,7 @@ exports.refundSubscription = asyncHandler(async (req, res) => {
     subscriptionRefundReason: String(req.body.reason || '').trim(),
     subscriptionRefundNote: String(req.body.note || '').trim(),
     subscriptionPaymentStatus: 'refunded',
-  }, { new: true }).populate('plan').populate('owner', 'name email');
+  }, { new: true }).populate('plan').populate('owner', 'name email avatarUrl');
   if (!item) throw new AppError(404, 'Subscription not found');
   res.json({ success: true, message: 'Subscription marked refunded', data: item });
 });
@@ -732,7 +732,7 @@ exports.extendSubscription = asyncHandler(async (req, res) => {
   if (req.body.note !== undefined) organization.subscriptionAdminNote = String(req.body.note || '').trim();
   await organization.save();
   await organization.populate('plan');
-  await organization.populate('owner', 'name email');
+  await organization.populate('owner', 'name email avatarUrl');
   res.json({ success: true, message: 'Subscription extended', data: organization });
 });
 
@@ -740,13 +740,13 @@ exports.activateSubscription = (active) => asyncHandler(async (req, res) => {
   const item = await Organization.findByIdAndUpdate(req.params.id, {
     subscriptionStatus: active ? 'active' : 'cancelled',
     ...(active ? { subscriptionCancelledAt: null, subscriptionCancelReason: '', subscriptionCancelAtPeriodEnd: false } : { subscriptionCancelledAt: new Date() }),
-  }, { new: true }).populate('plan').populate('owner', 'name email');
+  }, { new: true }).populate('plan').populate('owner', 'name email avatarUrl');
   if (!item) throw new AppError(404, 'Subscription not found');
   res.json({ success: true, message: active ? 'Subscription activated' : 'Subscription deactivated', data: item });
 });
 
 exports.addSubscriptionNote = asyncHandler(async (req, res) => {
-  const item = await Organization.findByIdAndUpdate(req.params.id, { subscriptionAdminNote: String(req.body.note || '').trim() }, { new: true }).populate('plan').populate('owner', 'name email');
+  const item = await Organization.findByIdAndUpdate(req.params.id, { subscriptionAdminNote: String(req.body.note || '').trim() }, { new: true }).populate('plan').populate('owner', 'name email avatarUrl');
   if (!item) throw new AppError(404, 'Subscription not found');
   res.json({ success: true, message: 'Admin note saved', data: item });
 });
@@ -789,7 +789,7 @@ exports.organizationVerifications = asyncHandler(async (req, res) => {
     const regex = new RegExp(escapeRegex(req.query.search), 'i');
     query.$or = [{ name: regex }, { email: regex }, { organizationCode: regex }];
   }
-  const data = await paged(Organization, query, req, { select: organizationFields, populate: [{ path: 'owner', select: 'name email' }] });
+  const data = await paged(Organization, query, req, { select: organizationFields, populate: [{ path: 'owner', select: 'name email avatarUrl' }] });
   res.json({ success: true, data });
 });
 

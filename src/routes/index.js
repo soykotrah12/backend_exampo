@@ -15,6 +15,7 @@ const adminRoutes = require('./adminRoutes');
 const { auth, allowRoles, requireActiveTeacherAccess } = require('../middleware/auth');
 const { requireFields } = require('../middleware/validate');
 const csvUpload = require('../middleware/csvUpload');
+const avatarUpload = require('../middleware/avatarUpload');
 
 router.post('/auth/register', requireFields('name','email','password','role'), authController.register);
 router.post('/auth/login', requireFields('email','password'), authController.login);
@@ -26,7 +27,7 @@ router.post('/v1/auth/logout', auth, authController.logout);
 router.get('/v1/auth/me', auth, authController.me);
 router.get('/users/me', auth, authController.me);
 router.patch('/users/me', auth, userController.updateMe);
-router.post('/users/me/avatar', auth, express.raw({ type: ['image/jpeg','image/png','image/webp'], limit: '2mb' }), userController.uploadAvatar);
+router.post('/users/me/avatar', auth, avatarUpload, userController.uploadAvatar);
 router.get('/organizations/me', auth, organization.me);
 router.patch('/organizations/me', auth, allowRoles('organization_owner'), organization.updateMe);
 router.post('/organizations/me/logo', auth, allowRoles('organization_owner'), express.raw({ type: ['image/jpeg','image/png','image/webp'], limit: '3mb' }), organization.uploadLogo);
