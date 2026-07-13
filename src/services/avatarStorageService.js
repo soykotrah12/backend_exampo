@@ -67,8 +67,27 @@ const safeFileNameFor = (contentType, originalName = '') => {
   return `${nameWithoutExtension || 'avatar'}${extension}`;
 };
 
+const isValidHttpUrl = (value) => {
+  try {
+    const url = new URL(String(value || '').trim());
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch (_) {
+    return false;
+  }
+};
+
+const isAzureBlobUrl = (value) => {
+  if (!isValidHttpUrl(value)) return false;
+  try {
+    const url = new URL(String(value || '').trim());
+    return url.hostname.includes('.blob.core.windows.net');
+  } catch (_) {
+    return false;
+  }
+};
+
 const blobNameFromPublicUrl = (publicUrl) => {
-  if (!publicUrl) return '';
+  if (!isAzureBlobUrl(publicUrl)) return '';
   try {
     const container = getContainerClient();
     const containerUrl = new URL(container.url);
@@ -108,7 +127,14 @@ exports.uploadAvatarFile = async ({ userId, file }) => exports.uploadAvatarBuffe
   originalName: file.originalname,
 });
 
+exports.avatarUrlInfo = (publicUrl) => ({
+  hasOldAvatar: Boolean(publicUrl),
+  isOldAvatarValidHttp: isValidHttpUrl(publicUrl),
+  isOldAvatarAzureBlob: isAzureBlobUrl(publicUrl),
+});
+
 exports.deleteAvatarIfOwned = async (publicUrl) => {
+  if (!isAzureBlobUrl(publicUrl)) return;
   const blobName = blobNameFromPublicUrl(publicUrl);
   if (!blobName) return;
   try {

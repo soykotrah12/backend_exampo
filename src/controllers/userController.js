@@ -31,6 +31,7 @@ exports.uploadAvatar = asyncHandler(async (req, res) => {
   if (!contentType.startsWith('image/')) throw new AppError(400, 'Only image files are accepted');
 
   const previousAvatarUrl = req.user.avatarUrl;
+  console.log('[avatar] old avatar check', avatarStorage.avatarUrlInfo(previousAvatarUrl));
   let avatarUrl;
   try {
     if (uploadedFile) {
