@@ -7,8 +7,97 @@ const asyncHandler = require('../utils/asyncHandler');
 const AppError = require('../utils/AppError');
 const access = require('../services/examAccessService');
 const scoring = require('../services/scoringService');
+const { withComputedExamStatus, getComputedExamStatus } = require('../utils/examStatus');
 const resultVisible = (slot) => slot.resultVisibilityMode === 'instant' || slot.resultPublished === true;
 const studentQuestion = (question) => ({ _id: question._id, questionNo: question.questionNo, type: question.type, questionText: question.questionText, statements: question.statements?.map((item) => ({ label: item.label, text: item.text })), options: question.options?.map((item) => ({ label: item.label, text: item.text })), marks: question.marks, wordLimit: question.wordLimit });
+
+const numberOrZero = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+};
+
+const roundMarks = (value) => Number(numberOrZero(value).toFixed(6));
+
+const boolAnswer = (value) => {
+  if (typeof value === 'boolean') return value;
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim().toLowerCase();
+  if (['true', 't', 'yes', '1'].includes(text)) return true;
+  if (['false', 'f', 'no', '0'].includes(text)) return false;
+  return null;
+};
+
+const answerValue = (answers, label) => {
+  if (!answers) return null;
+  if (typeof answers.get === 'function') return boolAnswer(answers.get(label));
+  return boolAnswer(answers[label]);
+};
+
+const answerCount = (answers) => {
+  if (!answers) return 0;
+  if (typeof answers.size === 'number') return answers.size;
+  return Object.keys(answers).length;
+};
+
+const plainAnswers = (answers) => {
+  if (!answers) return undefined;
+  if (typeof answers.entries === 'function') return Object.fromEntries(answers.entries());
+  return { ...answers };
+};
+
+const isSkippedAnswer = (question, answer) => {
+  if (!answer) return true;
+  if (question.type === 'TRUE_FALSE_GROUP') return answerCount(answer.answers) === 0;
+  if (question.type === 'SINGLE_BEST_ANSWER') return !answer.selectedOption;
+  if (question.type === 'WRITTEN') return !String(answer.writtenAnswer || '').trim();
+  return false;
+};
+
+const statusFor = (question, answer, earnedMarks, totalMarks, pendingWritten) => {
+  if (isSkippedAnswer(question, answer)) return 'skipped';
+  if (question.type === 'WRITTEN') return pendingWritten ? 'pending_review' : 'reviewed';
+  if (earnedMarks <= 0) return 'wrong';
+  return earnedMarks >= totalMarks ? 'correct' : 'partial';
+};
+
+const statementBreakdown = (question, answer, canShowCorrectAnswers) => {
+  const statements = Array.isArray(question.statements) ? question.statements : [];
+  const perStatementMarks = statements.length ? numberOrZero(question.marks) / statements.length : 0;
+  return statements.map((statement) => {
+    const studentAnswer = answerValue(answer?.answers, statement.label);
+    const hasStudentAnswer = studentAnswer !== null;
+    const correct = canShowCorrectAnswers ? boolAnswer(statement.correctAnswer) : null;
+    const hasCorrectAnswer = correct !== null;
+    const isCorrect = hasStudentAnswer && hasCorrectAnswer ? studentAnswer === correct : null;
+    return {
+      label: statement.label,
+      text: statement.text,
+      studentAnswer,
+      correctAnswer: correct,
+      isCorrect,
+      earnedMarks: isCorrect ? roundMarks(perStatementMarks) : 0,
+      totalMarks: roundMarks(perStatementMarks),
+    };
+  });
+};
+
+const optionBreakdown = (question, answer, canShowCorrectAnswers) => {
+  const options = Array.isArray(question.options) ? question.options : [];
+  const selected = answer?.selectedOption || null;
+  return options.map((option) => {
+    const isSelected = selected === option.label;
+    const isCorrect = canShowCorrectAnswers ? Boolean(option.isCorrect) : null;
+    return {
+      label: option.label,
+      text: option.text,
+      isSelected,
+      isCorrect,
+      isCorrectOption: isCorrect,
+      isWrongSelection: Boolean(canShowCorrectAnswers && isSelected && !option.isCorrect),
+      isWrongSelected: Boolean(canShowCorrectAnswers && isSelected && !option.isCorrect),
+    };
+  });
+};
 
 exports.listSlots = asyncHandler(async (req, res) => {
   if (!req.user.organization) return res.json({ success: true, data: [] });
@@ -22,7 +111,7 @@ exports.listSlots = asyncHandler(async (req, res) => {
     const allowed = await access.hasAccess(slot, req.user._id);
     const temporalStatus = now < new Date(slot.startDateTime) ? 'Upcoming' : now > new Date(slot.endDateTime) ? 'Ended' : 'Ongoing';
     return {
-      ...slot,
+      ...withComputedExamStatus(slot, now),
       serviceName: slot.service?.name || '',
       teacherName: slot.createdBy?.name || '',
       batchNames: (slot.assignedBatches || []).map((x) => x.name),
@@ -37,7 +126,7 @@ exports.listSlots = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 exports.requestAccess = asyncHandler(async (req, res) => {
-  const slot = await ExamSlot.findById(req.params.id); if (!slot || !['published','ongoing'].includes(slot.status)) throw new AppError(404, 'Published exam not found');
+  const slot = await ExamSlot.findById(req.params.id); if (!slot || !['upcoming','ongoing'].includes(getComputedExamStatus(slot))) throw new AppError(404, 'Published exam not found');
   if (!req.user.organization || String(req.user.organization) !== String(slot.organization)) throw new AppError(403, 'Please join the organization first using organization code.');
   if (await access.hasAccess(slot, req.user._id)) throw new AppError(409, 'You already have access');
   const request = await AccessRequest.findOneAndUpdate({ examSlot: slot._id, student: req.user._id }, { $set: { status: 'pending', organization: slot.organization }, $unset: { reviewedBy: 1, reviewedAt: 1 } }, { upsert: true, new: true });
@@ -47,9 +136,9 @@ exports.getExam = asyncHandler(async (req, res) => {
   const slot = await ExamSlot.findById(req.params.id); if (!slot) throw new AppError(404, 'Exam not found');
   if (!(await access.hasAccess(slot, req.user._id))) throw new AppError(403, 'You do not have access to this exam');
   if (await Submission.exists({ examSlot: slot._id, student: req.user._id })) throw new AppError(409, 'This exam has already been submitted');
-  const now = new Date(); if (now < slot.startDateTime || now > slot.endDateTime || !['published','ongoing'].includes(slot.status)) throw new AppError(403, 'The exam is not active');
+  const now = new Date(); if (getComputedExamStatus(slot, now) !== 'ongoing') throw new AppError(403, 'The exam is not active');
   const questions = await Question.find({ examSlot: slot._id }).sort({ questionNo: 1 }).lean();
-  res.json({ success: true, data: { ...slot.toObject(), questions: questions.map(studentQuestion), serverTime: now.toISOString() } });
+  res.json({ success: true, data: { ...withComputedExamStatus(slot.toObject(), now), questions: questions.map(studentQuestion), serverTime: now.toISOString() } });
 });
 exports.submit = asyncHandler(async (req, res) => {
   const slot = await ExamSlot.findById(req.params.id); if (!slot) throw new AppError(404, 'Exam not found');
@@ -85,35 +174,55 @@ exports.resultDetail = asyncHandler(async (req, res) => {
   const slot = await ExamSlot.findById(submission.examSlot).populate('service', 'name').populate('assignedBatches', 'name batchCode').lean();
   if (!slot) throw new AppError(404, 'The exam for this result no longer exists');
   if (!resultVisible(slot)) throw new AppError(403, 'Your result will be visible after the teacher publishes it');
-  const questions = await Question.find({ examSlot: slot._id }).sort({ questionNo: 1 }).lean();
+  const questions = await Question.find({ examSlot: slot._id }).select('+answerGuideline').sort({ questionNo: 1 }).lean();
   const answerByQuestion = new Map(submission.answers.map((answer) => [String(answer.questionId), answer]));
+  const canShowCorrectAnswers = resultVisible(slot);
+  const canShowQuestionReview = resultVisible(slot) && slot.showQuestionReview === true;
   const questionBreakdown = questions.map((question) => {
     const answer = answerByQuestion.get(String(question._id));
-    const earnedMarks = Number(answer?.earnedMarks ?? answer?.awardedMarks ?? 0);
-    const totalMarks = Number(answer?.totalMarks ?? question.marks ?? 0);
+    const earnedMarks = roundMarks(answer?.earnedMarks ?? answer?.awardedMarks ?? 0);
+    const totalMarks = roundMarks(answer?.totalMarks ?? question.marks ?? 0);
     const pendingWritten = question.type === 'WRITTEN' && submission.status !== 'reviewed';
-    const status = question.type === 'WRITTEN' ? (pendingWritten ? 'pending_review' : 'reviewed') : earnedMarks <= 0 ? 'wrong' : earnedMarks >= totalMarks ? 'correct' : 'partial';
+    const status = statusFor(question, answer, earnedMarks, totalMarks, pendingWritten);
+    const isSkipped = status === 'skipped';
+    const submittedAnswers = plainAnswers(answer?.answers);
     const item = {
       questionId: question._id,
       questionNo: question.questionNo,
       type: question.type,
+      questionType: question.type,
       earnedMarks,
       totalMarks,
+      marks: totalMarks,
       status,
-      ...(question.type === 'TRUE_FALSE_GROUP' && { correctCount: answer?.correctCount || 0, totalStatements: answer?.totalStatements ?? question.statements.length }),
+      isCorrect: status === 'correct',
+      isSkipped,
+      notAnswered: isSkipped,
+      options: question.type === 'SINGLE_BEST_ANSWER' ? optionBreakdown(question, answer, canShowCorrectAnswers) : [],
+      statements: question.type === 'TRUE_FALSE_GROUP' ? statementBreakdown(question, answer, canShowCorrectAnswers) : [],
+      studentAnswer: answer ? { answers: submittedAnswers, selectedOption: answer.selectedOption, writtenAnswer: answer.writtenAnswer } : null,
+      correctAnswer: null,
+      correctAnswers: null,
+      explanation: canShowCorrectAnswers ? question.answerGuideline || '' : '',
+      ...(question.type === 'TRUE_FALSE_GROUP' && { correctCount: answer?.correctCount || 0, totalStatements: answer?.totalStatements ?? (question.statements || []).length }),
     };
-    if (slot.showQuestionReview) {
+    if (canShowQuestionReview) {
       item.questionText = question.questionText;
-      item.answer = answer ? { answers: answer.answers, selectedOption: answer.selectedOption, writtenAnswer: answer.writtenAnswer } : null;
+      item.answer = answer ? { answers: submittedAnswers, selectedOption: answer.selectedOption, writtenAnswer: answer.writtenAnswer } : null;
     }
-    if (slot.showCorrectAnswers) {
-      if (question.type === 'TRUE_FALSE_GROUP') item.correctAnswers = Object.fromEntries(question.statements.map((x) => [x.label, x.correctAnswer]));
-      if (question.type === 'SINGLE_BEST_ANSWER') item.correctOption = question.options.find((x) => x.isCorrect)?.label;
+    if (canShowCorrectAnswers) {
+      if (question.type === 'TRUE_FALSE_GROUP') {
+        item.correctAnswers = Object.fromEntries((question.statements || []).map((x) => [x.label, x.correctAnswer]));
+      }
+      if (question.type === 'SINGLE_BEST_ANSWER') {
+        item.correctOption = (question.options || []).find((x) => x.isCorrect)?.label;
+        item.correctAnswer = item.correctOption || null;
+      }
     }
     return item;
   });
   const rank = 1 + await Submission.countDocuments({ examSlot: slot._id, totalScore: { $gt: submission.totalScore }, $or: [{ resultPublished: true }, { status: 'reviewed' }] });
-  const response = { _id: submission._id, examSlot: { _id: slot._id, title: slot.title, category: slot.category, startDateTime: slot.startDateTime, endDateTime: slot.endDateTime }, service: slot.service, batch: submission.batch ? await Batch.findById(submission.batch).select('name batchCode').lean() : null, submittedAt: submission.submittedAt, autoSubmitted: submission.autoSubmitted, mcqScore: submission.mcqScore, writtenScore: submission.writtenScore, totalScore: submission.totalScore, totalMarks: slot.totalMarks || questions.reduce((sum, question) => sum + Number(question.marks || 0), 0), percentage: submission.percentage, rank, reviewFeedback: submission.reviewFeedback, status: submission.status === 'reviewed' ? 'result_published' : 'pending_review', showCorrectAnswers: slot.showCorrectAnswers, showQuestionReview: slot.showQuestionReview, questionBreakdown };
+  const response = { _id: submission._id, examSlot: { _id: slot._id, title: slot.title, category: slot.category, startDateTime: slot.startDateTime, endDateTime: slot.endDateTime }, service: slot.service, batch: submission.batch ? await Batch.findById(submission.batch).select('name batchCode').lean() : null, submittedAt: submission.submittedAt, autoSubmitted: submission.autoSubmitted, mcqScore: submission.mcqScore, writtenScore: submission.writtenScore, totalScore: submission.totalScore, totalMarks: slot.totalMarks || questions.reduce((sum, question) => sum + Number(question.marks || 0), 0), percentage: submission.percentage, rank, reviewFeedback: submission.reviewFeedback, status: submission.status === 'reviewed' ? 'result_published' : 'pending_review', resultPublished: resultVisible(slot), showCorrectAnswers: canShowCorrectAnswers, showQuestionReview: canShowQuestionReview, questionBreakdown };
   res.json({ success: true, data: response });
 });
 

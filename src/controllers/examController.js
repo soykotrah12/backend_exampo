@@ -10,6 +10,7 @@ const AppError = require('../utils/AppError');
 const permissions = require('../services/permissionService');
 const access = require('../services/examAccessService');
 const csvImport = require('../services/csvImportService');
+const { withComputedExamStatus } = require('../utils/examStatus');
 const assertQuestionEditable = async (slot) => {
   if (await Submission.exists({ examSlot: slot._id })) throw new AppError(409, 'This question cannot be edited because students have already submitted answers.');
   if (new Date() >= slot.startDateTime) throw new AppError(409, 'Questions cannot be changed after the exam starts');
@@ -56,13 +57,14 @@ exports.createSlot = asyncHandler(async (req, res) => {
   const end = new Date(start.getTime() + duration * 60 * 1000);
   const normalized = normalizeCategories(req.body);
   const slot = await ExamSlot.create({ ...normalized, service: service?._id, startDateTime: start, endDateTime: end, durationMinutes: duration, organization: req.user.organization, createdBy: req.user._id, assignedStudents: [], assignedBatches: [] });
-  res.status(201).json({ success: true, message: 'Exam slot created', data: slot });
+  res.status(201).json({ success: true, message: 'Exam slot created', data: withComputedExamStatus(slot.toObject()) });
 });
 exports.listManaged = asyncHandler(async (req, res) => {
   access.assertTeacherAccepted(req.user);
   const query = { organization: req.user.organization, ...access.teacherExamQuery(req.user) };
   const slots = await ExamSlot.find(query).populate('assignedBatches', 'name batchCode').populate('service', 'name color icon').sort({ startDateTime: -1 }).lean();
-  const data = await Promise.all(slots.map(async (slot) => ({ ...slot, serviceName: slot.service?.name || '', batchNames: (slot.assignedBatches || []).map((x) => x.name), totalQuestions: await Question.countDocuments({ examSlot: slot._id }), assignedStudentsCount: slot.assignedStudents.length, submissionCount: await Submission.countDocuments({ examSlot: slot._id }) })));
+  const now = new Date();
+  const data = await Promise.all(slots.map(async (slot) => ({ ...withComputedExamStatus(slot, now), serviceName: slot.service?.name || '', batchNames: (slot.assignedBatches || []).map((x) => x.name), totalQuestions: await Question.countDocuments({ examSlot: slot._id }), assignedStudentsCount: slot.assignedStudents.length, submissionCount: await Submission.countDocuments({ examSlot: slot._id }) })));
   res.json({ success: true, data });
 });
 exports.accessOptions = asyncHandler(async (req, res) => {
@@ -96,7 +98,7 @@ exports.accessOptions = asyncHandler(async (req, res) => {
     },
   });
 });
-exports.getManaged = asyncHandler(async (req, res) => { const slot = await slotForManage(req.params.id, req.user); const [questions, submissionCount] = await Promise.all([Question.find({ examSlot: slot._id }).sort({ order: 1 }), Submission.countDocuments({ examSlot: slot._id })]); res.json({ success: true, data: { ...slot.toObject(), questions, submissionCount, totalQuestions: questions.length } }); });
+exports.getManaged = asyncHandler(async (req, res) => { const slot = await slotForManage(req.params.id, req.user); const [questions, submissionCount] = await Promise.all([Question.find({ examSlot: slot._id }).sort({ order: 1 }), Submission.countDocuments({ examSlot: slot._id })]); res.json({ success: true, data: { ...withComputedExamStatus(slot.toObject()), questions, submissionCount, totalQuestions: questions.length } }); });
 exports.listQuestions = asyncHandler(async (req, res) => { const slot = await slotForManage(req.params.id, req.user); res.json({ success: true, data: await Question.find({ examSlot: slot._id }).select('+answerGuideline').sort({ questionNo: 1 }) }); });
 exports.getQuestion = asyncHandler(async (req, res) => { const question = await Question.findById(req.params.questionId).select('+answerGuideline'); if (!question) throw new AppError(404, 'Question not found'); await slotForManage(question.examSlot, req.user); res.json({ success: true, data: question }); });
 exports.updateSlot = asyncHandler(async (req, res) => {
@@ -126,7 +128,7 @@ exports.updateSlot = asyncHandler(async (req, res) => {
   const start = new Date(slot.startDateTime); const duration = Number(slot.durationMinutes);
   if (Number.isNaN(start.getTime()) || !Number.isFinite(duration) || duration <= 0) throw new AppError(400, 'Start time and positive duration are required');
   slot.endDateTime = new Date(start.getTime() + duration * 60 * 1000);
-  await slot.save(); res.json({ success: true, message: 'Exam slot updated successfully', data: slot });
+  await slot.save(); res.json({ success: true, message: 'Exam slot updated successfully', data: withComputedExamStatus(slot.toObject()) });
 });
 exports.deleteSlot = asyncHandler(async (req, res) => {
   const slot = await slotForManage(req.params.id, req.user);
@@ -175,7 +177,7 @@ exports.assign = asyncHandler(async (req, res) => {
   }
   access.assertAssignedService(req.user, slot.service);
   await slot.save();
-  res.json({ success: true, message: 'Exam access updated', data: slot });
+  res.json({ success: true, message: 'Exam access updated', data: withComputedExamStatus(slot.toObject()) });
 });
 exports.removeStudent = asyncHandler(async (req, res) => { const slot = await slotForManage(req.params.id, req.user); slot.assignedStudents.pull(req.body.studentId); await slot.save(); res.json({ success: true, message: 'Student removed' }); });
 

@@ -6,6 +6,7 @@ const AppError = require('../utils/AppError');
 const access = require('../services/examAccessService');
 const Batch = require('../models/Batch');
 const User = require('../models/User');
+const { withComputedExamStatus } = require('../utils/examStatus');
 
 exports.requests = asyncHandler(async (req, res) => {
   if (req.user.role === 'teacher' && !req.user.organization) return res.json({ success: true, data: [] });
@@ -51,7 +52,7 @@ exports.history = asyncHandler(async (req, res) => {
   const slots = await ExamSlot.find(query).sort({ endDateTime: -1 }).lean();
   const data = await Promise.all(slots.map(async (slot) => {
     const submissions = await Submission.find({ examSlot: slot._id }).select('totalScore').lean();
-    return { ...slot, assignedStudentsCount: slot.assignedStudents.length, submissionCount: submissions.length, averageScore: submissions.length ? submissions.reduce((sum, x) => sum + Number(x.totalScore || 0), 0) / submissions.length : null };
+    return { ...withComputedExamStatus(slot), assignedStudentsCount: slot.assignedStudents.length, submissionCount: submissions.length, averageScore: submissions.length ? submissions.reduce((sum, x) => sum + Number(x.totalScore || 0), 0) / submissions.length : null };
   }));
   res.json({ success: true, data });
 });
@@ -68,12 +69,12 @@ exports.dashboardSummary = asyncHandler(async (req, res) => {
   const [runningBatchesCount, totalStudents, upcomingExamsCount, todayExams, pendingAccessRequestsCount, pendingWrittenReviewsCount, recentSubmissionsCount, resultsWaitingToPublishCount] = await Promise.all([
     Batch.countDocuments({ organization: req.user.organization, isActive: true, ...(req.user.role === 'teacher' && { _id: { $in: req.user.assignedBatches } }) }),
     User.countDocuments({ organization: req.user.organization, role: 'student', isActive: true, ...(req.user.role === 'teacher' && { batches: { $in: req.user.assignedBatches } }) }),
-    ExamSlot.countDocuments({ ...slotBase, startDateTime: { $gt: now }, status: { $in: ['draft','published'] } }),
-    ExamSlot.find({ ...slotBase, startDateTime: { $lt: dayEnd }, endDateTime: { $gt: now }, status: { $in: ['published','ongoing'] } }).populate('assignedBatches', 'name').populate('service', 'name').sort({ startDateTime: 1 }).limit(6).lean(),
+    ExamSlot.countDocuments({ ...slotBase, startDateTime: { $gt: now }, status: { $nin: ['draft','cancelled','archived'] } }),
+    ExamSlot.find({ ...slotBase, startDateTime: { $lt: dayEnd }, endDateTime: { $gt: now }, status: { $nin: ['draft','cancelled','archived'] } }).populate('assignedBatches', 'name').populate('service', 'name').sort({ startDateTime: 1 }).limit(6).lean(),
     AccessRequest.countDocuments({ examSlot: { $in: slotIds }, status: 'pending' }),
     Submission.countDocuments({ examSlot: { $in: slotIds }, status: 'submitted', 'answers.type': 'WRITTEN' }),
     Submission.countDocuments({ examSlot: { $in: slotIds }, submittedAt: { $gte: weekStart } }),
     ExamSlot.countDocuments({ ...slotBase, endDateTime: { $lt: now }, resultVisibilityMode: 'manual_publish', resultPublished: false }),
   ]);
-  res.json({ success: true, data: { runningBatchesCount, totalStudents, upcomingExamsCount, todayExams: todayExams.map((exam) => ({ ...exam, serviceName: exam.service?.name || '', batchNames: (exam.assignedBatches || []).map((batch) => batch.name) })), pendingAccessRequestsCount, pendingWrittenReviewsCount, recentSubmissionsCount, resultsWaitingToPublishCount } });
+  res.json({ success: true, data: { runningBatchesCount, totalStudents, upcomingExamsCount, todayExams: todayExams.map((exam) => ({ ...withComputedExamStatus(exam, now), serviceName: exam.service?.name || '', batchNames: (exam.assignedBatches || []).map((batch) => batch.name) })), pendingAccessRequestsCount, pendingWrittenReviewsCount, recentSubmissionsCount, resultsWaitingToPublishCount, serverNow: now.toISOString() } });
 });

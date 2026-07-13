@@ -8,6 +8,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const AppError = require('../utils/AppError');
 const { generateCode } = require('../utils/codeGenerator');
 const access = require('../services/examAccessService');
+const { withComputedExamStatus } = require('../utils/examStatus');
 
 const ownerOnly = (user) => {
   if (user.role !== 'organization_owner') throw new AppError(403, 'Only organization owners can manage batches');
@@ -49,7 +50,7 @@ exports.list = asyncHandler(async (req, res) => {
     const examQuery = { organization: req.user.organization, assignedBatches: batch._id, ...access.teacherExamQuery(req.user) };
     const [examsCount, upcomingExamsCount] = await Promise.all([
       ExamSlot.countDocuments(examQuery),
-      ExamSlot.countDocuments({ ...examQuery, startDateTime: { $gt: now }, status: { $in: ['published','draft'] } }),
+      ExamSlot.countDocuments({ ...examQuery, startDateTime: { $gt: now }, status: { $nin: ['draft','cancelled','archived'] } }),
     ]);
     return { ...batch, serviceName: batch.service?.name || '', studentCount: batch.students.length, examsCount, upcomingExamsCount };
   }));
@@ -99,8 +100,8 @@ exports.examSlots = asyncHandler(async (req, res) => {
   const batch = await managed(req.params.id, req.user);
   const query = { organization: batch.organization, assignedBatches: batch._id, ...access.teacherExamQuery(req.user) };
   const status = String(req.query.status || 'all').toLowerCase();
-  const now = new Date();
   if (status === 'draft' || status === 'published') query.status = status;
+  const now = new Date();
   if (status === 'upcoming') query.startDateTime = { $gt: now };
   if (status === 'ongoing') { query.startDateTime = { $lte: now }; query.endDateTime = { $gte: now }; }
   if (status === 'completed') query.endDateTime = { $lt: now };
@@ -120,7 +121,7 @@ exports.examSlots = asyncHandler(async (req, res) => {
       Submission.countDocuments({ examSlot: slot._id }),
     ]);
     return {
-      ...slot,
+      ...withComputedExamStatus(slot, now),
       serviceName: slot.service?.name || '',
       batchNames: (slot.assignedBatches || []).map((item) => item.name),
       totalQuestions,
