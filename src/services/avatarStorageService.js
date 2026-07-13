@@ -6,6 +6,7 @@ const AppError = require('../utils/AppError');
 const connectionString =
   process.env.EXAMPO_AZURE_STORAGE_CONNECTION_STRING ||
   process.env.AZURE_STORAGE_CONNECTION_STRING;
+const cleanConnectionString = connectionString?.trim();
 
 const containerName =
   process.env.EXAMPO_AZURE_STORAGE_CONTAINER_NAME ||
@@ -15,37 +16,48 @@ const containerName =
 let containerClient;
 
 const assertValidConnectionString = () => {
-  if (!connectionString || typeof connectionString !== 'string') {
-    throw new AppError(500, 'Azure storage is not configured');
-  }
-  const isConnectionStringValid =
-    connectionString.includes('DefaultEndpointsProtocol=') &&
-    connectionString.includes('AccountName=') &&
-    connectionString.includes('AccountKey=') &&
-    connectionString.includes('EndpointSuffix=');
-  if (!isConnectionStringValid) {
-    throw new AppError(500, 'Azure storage connection string is invalid');
+  const connectionStringLooksValid =
+    cleanConnectionString &&
+    cleanConnectionString.includes('DefaultEndpointsProtocol=') &&
+    cleanConnectionString.includes('AccountName=') &&
+    cleanConnectionString.includes('AccountKey=') &&
+    cleanConnectionString.includes('EndpointSuffix=');
+  if (!connectionStringLooksValid) {
+    throw new AppError(
+      500,
+      'Azure storage connection string is invalid. Please use the full connection string, not only the account key.',
+    );
   }
 };
 
 const getContainerClient = () => {
+  const connectionStringLooksValid =
+    cleanConnectionString &&
+    cleanConnectionString.includes('DefaultEndpointsProtocol=') &&
+    cleanConnectionString.includes('AccountName=') &&
+    cleanConnectionString.includes('AccountKey=') &&
+    cleanConnectionString.includes('EndpointSuffix=');
   console.log('[avatar-storage] configuration', {
     hasExampoConnectionString: Boolean(process.env.EXAMPO_AZURE_STORAGE_CONNECTION_STRING),
     hasAzureConnectionString: Boolean(process.env.AZURE_STORAGE_CONNECTION_STRING),
-    resolvedConnectionString: Boolean(connectionString),
+    resolvedConnectionString: Boolean(cleanConnectionString),
+    connectionStringLooksValid: Boolean(connectionStringLooksValid),
     containerName,
   });
   assertValidConnectionString();
   if (!containerClient) {
     try {
-      const blobServiceClient = BlobServiceClient.fromConnectionString(connectionString);
+      const blobServiceClient = BlobServiceClient.fromConnectionString(cleanConnectionString);
       containerClient = blobServiceClient.getContainerClient(containerName);
     } catch (error) {
       console.error('[avatar-storage] client creation failed', {
         message: error.message,
         code: error.code,
       });
-      throw new AppError(500, 'Azure storage connection string is invalid');
+      throw new AppError(
+        500,
+        'Azure storage connection string is invalid. Please use the full connection string, not only the account key.',
+      );
     }
   }
   return containerClient;

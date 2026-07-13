@@ -13,20 +13,9 @@ const multipartUpload = multer({
     }
     callback(null, true);
   },
-}).fields([
-  { name: 'avatar', maxCount: 1 },
-  { name: 'file', maxCount: 1 },
-  { name: 'image', maxCount: 1 },
-]);
+}).single('avatar');
 
 const rawUpload = express.raw({ type: 'image/*', limit: maxAvatarBytes });
-
-const selectedFile = (files = {}) => (
-  files.avatar?.[0] ||
-  files.file?.[0] ||
-  files.image?.[0] ||
-  Object.values(files).flat()[0]
-);
 
 module.exports = (req, res, next) => {
   const contentType = String(req.headers['content-type'] || '').toLowerCase();
@@ -42,7 +31,6 @@ module.exports = (req, res, next) => {
       }
       return next(error);
     }
-    req.file = selectedFile(req.files);
     next();
   });
 };
