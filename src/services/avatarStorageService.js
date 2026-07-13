@@ -14,32 +14,57 @@ const containerName =
 
 let containerClient;
 
+const assertValidConnectionString = () => {
+  if (!connectionString || typeof connectionString !== 'string') {
+    throw new AppError(500, 'Azure storage is not configured');
+  }
+  const isConnectionStringValid =
+    connectionString.includes('DefaultEndpointsProtocol=') &&
+    connectionString.includes('AccountName=') &&
+    connectionString.includes('AccountKey=') &&
+    connectionString.includes('EndpointSuffix=');
+  if (!isConnectionStringValid) {
+    throw new AppError(500, 'Azure storage connection string is invalid');
+  }
+};
+
 const getContainerClient = () => {
-  console.info('[avatar-storage] configuration', {
+  console.log('[avatar-storage] configuration', {
     hasExampoConnectionString: Boolean(process.env.EXAMPO_AZURE_STORAGE_CONNECTION_STRING),
     hasAzureConnectionString: Boolean(process.env.AZURE_STORAGE_CONNECTION_STRING),
+    resolvedConnectionString: Boolean(connectionString),
     containerName,
   });
-  if (!connectionString) throw new AppError(500, 'Azure storage is not configured');
+  assertValidConnectionString();
   if (!containerClient) {
-    containerClient = BlobServiceClient
-      .fromConnectionString(connectionString)
-      .getContainerClient(containerName);
+    try {
+      const blobServiceClient = BlobServiceClient.fromConnectionString(connectionString);
+      containerClient = blobServiceClient.getContainerClient(containerName);
+    } catch (error) {
+      console.error('[avatar-storage] client creation failed', {
+        message: error.message,
+        code: error.code,
+      });
+      throw new AppError(500, 'Azure storage connection string is invalid');
+    }
   }
   return containerClient;
 };
 
-const extensionFor = (contentType, originalName = '') => {
+const safeFileNameFor = (contentType, originalName = '') => {
+  const rawName = path.basename(String(originalName || '')).replace(/[^a-zA-Z0-9._-]/g, '-');
+  const baseName = rawName.replace(/\.+/g, '.').replace(/^-+|-+$/g, '');
+  const extensionFromName = path.extname(baseName).toLowerCase().replace(/[^a-z0-9.]/g, '');
+  const nameWithoutExtension = path.basename(baseName, extensionFromName).replace(/[^a-zA-Z0-9_-]/g, '-');
   const type = String(contentType || '').toLowerCase().split(';')[0].trim();
-  const fromName = path.extname(String(originalName || '')).toLowerCase().replace(/[^a-z0-9.]/g, '');
   const allowedExtensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg', '.avif', '.bmp', '.heic', '.heif', '.tif', '.tiff']);
-  if (allowedExtensions.has(fromName)) return fromName;
-  if (type === 'image/jpeg' || type === 'image/jpg') return '.jpg';
-  if (type === 'image/png') return '.png';
-  if (type === 'image/webp') return '.webp';
-  if (type === 'image/gif') return '.gif';
-  if (type === 'image/svg+xml') return '.svg';
-  return '.img';
+  let extension = allowedExtensions.has(extensionFromName) ? extensionFromName : '.img';
+  if (type === 'image/jpeg' || type === 'image/jpg') extension = '.jpg';
+  if (type === 'image/png') extension = '.png';
+  if (type === 'image/webp') extension = '.webp';
+  if (type === 'image/gif') extension = '.gif';
+  if (type === 'image/svg+xml') extension = '.svg';
+  return `${nameWithoutExtension || 'avatar'}${extension}`;
 };
 
 const blobNameFromPublicUrl = (publicUrl) => {
@@ -61,8 +86,8 @@ const blobNameFromPublicUrl = (publicUrl) => {
 
 exports.uploadAvatarBuffer = async ({ userId, buffer, contentType, originalName }) => {
   const container = getContainerClient();
-  const extension = extensionFor(contentType, originalName);
-  const blobName = `${userId}/${Date.now()}-${crypto.randomUUID()}${extension}`;
+  const safeFileName = `${crypto.randomUUID()}-${safeFileNameFor(contentType, originalName)}`;
+  const blobName = `${userId}-${Date.now()}-${safeFileName}`;
   const blockBlob = container.getBlockBlobClient(blobName);
   console.info('[avatar-storage] uploading blob', {
     containerName,
@@ -75,6 +100,13 @@ exports.uploadAvatarBuffer = async ({ userId, buffer, contentType, originalName 
   });
   return { avatarUrl: blockBlob.url, blobName };
 };
+
+exports.uploadAvatarFile = async ({ userId, file }) => exports.uploadAvatarBuffer({
+  userId,
+  buffer: file.buffer,
+  contentType: file.mimetype,
+  originalName: file.originalname,
+});
 
 exports.deleteAvatarIfOwned = async (publicUrl) => {
   const blobName = blobNameFromPublicUrl(publicUrl);

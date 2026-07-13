@@ -33,12 +33,19 @@ exports.uploadAvatar = asyncHandler(async (req, res) => {
   const previousAvatarUrl = req.user.avatarUrl;
   let avatarUrl;
   try {
-    ({ avatarUrl } = await avatarStorage.uploadAvatarBuffer({
-      userId: req.user._id.toString(),
-      buffer,
-      contentType,
-      originalName: uploadedFile?.originalname,
-    }));
+    if (uploadedFile) {
+      ({ avatarUrl } = await avatarStorage.uploadAvatarFile({
+        userId: req.user._id.toString(),
+        file: uploadedFile,
+      }));
+    } else {
+      ({ avatarUrl } = await avatarStorage.uploadAvatarBuffer({
+        userId: req.user._id.toString(),
+        buffer,
+        contentType,
+        originalName: req.headers['x-file-name'],
+      }));
+    }
     console.info('[avatar] upload success', { userId: req.user._id.toString() });
   } catch (error) {
     console.error('[avatar] upload failure', {
