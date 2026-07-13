@@ -3,11 +3,17 @@ const asyncHandler = require('../utils/asyncHandler');
 const AppError = require('../utils/AppError');
 const permissions = require('../services/permissionService');
 const avatarStorage = require('../services/avatarStorageService');
+const { safeAvatarUrl, withSafeAvatarUrl } = require('../utils/avatarUrl');
 
 exports.updateMe = asyncHandler(async (req, res) => {
   const allowed = ['name','bio','location','avatarUrl','phone','contactNumber','address'];
-  allowed.forEach((key) => { if (req.body[key] !== undefined) req.user[key] = String(req.body[key]).trim(); });
-  await req.user.save(); res.json({ success: true, message: 'Profile updated', data: req.user.toSafeJSON() });
+  allowed.forEach((key) => {
+    if (req.body[key] === undefined) return;
+    req.user[key] = key === 'avatarUrl'
+      ? (safeAvatarUrl(req.body[key]) || '')
+      : String(req.body[key]).trim();
+  });
+  await req.user.save(); res.json({ success: true, message: 'Profile updated', data: withSafeAvatarUrl(req.user) });
 });
 
 exports.uploadAvatar = asyncHandler(async (req, res) => {
@@ -15,27 +21,44 @@ exports.uploadAvatar = asyncHandler(async (req, res) => {
   const buffer = uploadedFile?.buffer || req.body;
   const contentType = String(uploadedFile?.mimetype || req.headers['content-type'] || '').toLowerCase();
 
+  console.info('[avatar] request received', {
+    fileReceived: Boolean(uploadedFile),
+    mimetype: uploadedFile?.mimetype || req.headers['content-type'] || '',
+    size: uploadedFile?.size || (Buffer.isBuffer(buffer) ? buffer.length : 0),
+  });
+
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) throw new AppError(400, 'Select an image to upload');
   if (!contentType.startsWith('image/')) throw new AppError(400, 'Only image files are accepted');
 
   const previousAvatarUrl = req.user.avatarUrl;
-  const { avatarUrl } = await avatarStorage.uploadAvatarBuffer({
-    userId: req.user._id.toString(),
-    buffer,
-    contentType,
-    originalName: uploadedFile?.originalname,
-  });
+  let avatarUrl;
+  try {
+    ({ avatarUrl } = await avatarStorage.uploadAvatarBuffer({
+      userId: req.user._id.toString(),
+      buffer,
+      contentType,
+      originalName: uploadedFile?.originalname,
+    }));
+    console.info('[avatar] upload success', { userId: req.user._id.toString() });
+  } catch (error) {
+    console.error('[avatar] upload failure', {
+      userId: req.user._id.toString(),
+      message: error.message,
+      code: error.code,
+      statusCode: error.statusCode,
+    });
+    throw error;
+  }
 
   req.user.avatarUrl = avatarUrl;
   await req.user.save();
   await avatarStorage.deleteAvatarIfOwned(previousAvatarUrl);
 
-  const user = req.user.toSafeJSON();
+  const user = withSafeAvatarUrl(req.user);
   res.json({
     success: true,
     message: 'Avatar uploaded successfully',
     data: {
-      ...user,
       avatarUrl: user.avatarUrl,
       user,
     },

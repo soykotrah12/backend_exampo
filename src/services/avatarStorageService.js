@@ -15,6 +15,11 @@ const containerName =
 let containerClient;
 
 const getContainerClient = () => {
+  console.info('[avatar-storage] configuration', {
+    hasExampoConnectionString: Boolean(process.env.EXAMPO_AZURE_STORAGE_CONNECTION_STRING),
+    hasAzureConnectionString: Boolean(process.env.AZURE_STORAGE_CONNECTION_STRING),
+    containerName,
+  });
   if (!connectionString) throw new AppError(500, 'Azure storage is not configured');
   if (!containerClient) {
     containerClient = BlobServiceClient
@@ -59,6 +64,12 @@ exports.uploadAvatarBuffer = async ({ userId, buffer, contentType, originalName 
   const extension = extensionFor(contentType, originalName);
   const blobName = `${userId}/${Date.now()}-${crypto.randomUUID()}${extension}`;
   const blockBlob = container.getBlockBlobClient(blobName);
+  console.info('[avatar-storage] uploading blob', {
+    containerName,
+    blobName,
+    contentType,
+    size: buffer.length,
+  });
   await blockBlob.uploadData(buffer, {
     blobHTTPHeaders: { blobContentType: contentType },
   });
