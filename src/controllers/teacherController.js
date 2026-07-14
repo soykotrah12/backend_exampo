@@ -20,7 +20,7 @@ exports.reviewRequest = (status) => asyncHandler(async (req, res) => {
   if (status === 'accepted') { slot.assignedStudents.addToSet(request.student); await slot.save(); }
   res.json({ success: true, message: `Request ${status}`, data: request });
 });
-exports.submissions = asyncHandler(async (req, res) => { const slot = await ExamSlot.findById(req.params.id); if (!slot) throw new AppError(404, 'Exam not found'); access.assertManage(slot, req.user); res.json({ success: true, data: await Submission.find({ examSlot: slot._id }).populate('student', 'name email').select('-answers') }); });
+exports.submissions = asyncHandler(async (req, res) => { const slot = await ExamSlot.findById(req.params.id); if (!slot) throw new AppError(404, 'Exam not found'); access.assertManage(slot, req.user); res.json({ success: true, data: await Submission.find({ examSlot: slot._id }).populate('student', 'name email').select('-answers').sort({ submittedAt: -1 }) }); });
 exports.submission = asyncHandler(async (req, res) => { const submission = await Submission.findById(req.params.id).populate('student', 'name email').populate('answers.questionId', 'questionText marks type'); if (!submission) throw new AppError(404, 'Submission not found'); const slot = await ExamSlot.findById(submission.examSlot); access.assertManage(slot, req.user); res.json({ success: true, data: submission }); });
 exports.reviewWritten = asyncHandler(async (req, res) => {
   const submission = await Submission.findById(req.params.id); if (!submission) throw new AppError(404, 'Submission not found'); const slot = await ExamSlot.findById(submission.examSlot); access.assertManage(slot, req.user);
@@ -66,15 +66,19 @@ exports.dashboardSummary = asyncHandler(async (req, res) => {
   const slotBase = { organization: req.user.organization, ...access.teacherExamQuery(req.user) };
   const slots = await ExamSlot.find(slotBase).select('_id').lean();
   const slotIds = slots.map((slot) => slot._id);
+  const waitingResultWindow = { resultVisibilityMode: 'manual_publish', resultPublished: false, $or: [{ isAnytimeExam: true }, { endDateTime: { $lt: now } }] };
+  const waitingResultQuery = slotBase.$or
+    ? { organization: req.user.organization, $and: [{ $or: slotBase.$or }, waitingResultWindow] }
+    : { ...slotBase, ...waitingResultWindow };
   const [runningBatchesCount, totalStudents, upcomingExamsCount, todayExams, pendingAccessRequestsCount, pendingWrittenReviewsCount, recentSubmissionsCount, resultsWaitingToPublishCount] = await Promise.all([
     Batch.countDocuments({ organization: req.user.organization, isActive: true, ...(req.user.role === 'teacher' && { _id: { $in: req.user.assignedBatches } }) }),
     User.countDocuments({ organization: req.user.organization, role: 'student', isActive: true, ...(req.user.role === 'teacher' && { batches: { $in: req.user.assignedBatches } }) }),
-    ExamSlot.countDocuments({ ...slotBase, startDateTime: { $gt: now }, status: { $nin: ['draft','cancelled','archived'] } }),
-    ExamSlot.find({ ...slotBase, startDateTime: { $lt: dayEnd }, endDateTime: { $gt: now }, status: { $nin: ['draft','cancelled','archived'] } }).populate('assignedBatches', 'name').populate('service', 'name').sort({ startDateTime: 1 }).limit(6).lean(),
+    ExamSlot.countDocuments({ ...slotBase, isAnytimeExam: { $ne: true }, startDateTime: { $gt: now }, status: { $nin: ['draft','cancelled','archived'] } }),
+    ExamSlot.find({ ...slotBase, isAnytimeExam: { $ne: true }, startDateTime: { $lt: dayEnd }, endDateTime: { $gt: now }, status: { $nin: ['draft','cancelled','archived'] } }).populate('assignedBatches', 'name').populate('service', 'name').sort({ startDateTime: 1 }).limit(6).lean(),
     AccessRequest.countDocuments({ examSlot: { $in: slotIds }, status: 'pending' }),
     Submission.countDocuments({ examSlot: { $in: slotIds }, status: 'submitted', 'answers.type': 'WRITTEN' }),
     Submission.countDocuments({ examSlot: { $in: slotIds }, submittedAt: { $gte: weekStart } }),
-    ExamSlot.countDocuments({ ...slotBase, endDateTime: { $lt: now }, resultVisibilityMode: 'manual_publish', resultPublished: false }),
+    ExamSlot.countDocuments(waitingResultQuery),
   ]);
   res.json({ success: true, data: { runningBatchesCount, totalStudents, upcomingExamsCount, todayExams: todayExams.map((exam) => ({ ...withComputedExamStatus(exam, now), serviceName: exam.service?.name || '', batchNames: (exam.assignedBatches || []).map((batch) => batch.name) })), pendingAccessRequestsCount, pendingWrittenReviewsCount, recentSubmissionsCount, resultsWaitingToPublishCount, serverNow: now.toISOString() } });
 });

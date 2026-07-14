@@ -2,6 +2,7 @@ const labels = {
   draft: 'Draft',
   upcoming: 'Upcoming',
   ongoing: 'Ongoing',
+  anytime: 'Anytime',
   completed: 'Completed',
   result_published: 'Result Published',
   cancelled: 'Cancelled',
@@ -13,6 +14,7 @@ const terminalStatuses = new Set(['draft', 'cancelled', 'archived']);
 function getComputedExamStatus(exam, now = new Date()) {
   const stored = String(exam.status || 'draft').toLowerCase();
   if (terminalStatuses.has(stored)) return stored;
+  if (exam.isAnytimeExam === true) return 'anytime';
 
   const start = new Date(exam.startDateTime);
   const end = new Date(exam.endDateTime);

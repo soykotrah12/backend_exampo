@@ -119,7 +119,7 @@ exports.updateSlot = asyncHandler(async (req, res) => {
     if (count !== batchIds.length) throw new AppError(403, 'Every assigned batch must belong to your organization');
     body.assignedBatches = batchIds;
   }
-  const allowed = ['title','description','category','mainCategory','subCategory','examType','startDateTime','durationMinutes','instructions','passingMarks','status','resultVisibilityMode','showCorrectAnswers','showQuestionReview','accessScope','assignedStudents','assignedBatches','service'];
+  const allowed = ['title','description','category','mainCategory','subCategory','examType','startDateTime','durationMinutes','isAnytimeExam','instructions','passingMarks','status','resultVisibilityMode','showCorrectAnswers','showQuestionReview','accessScope','assignedStudents','assignedBatches','service'];
   allowed.forEach((key) => { if (body[key] !== undefined) slot[key] = body[key]; });
   if (req.body.serviceId !== undefined) slot.service = req.body.serviceId || undefined;
   if (slot.service && !(await Service.exists({ _id: slot.service, organization: slot.organization, isActive: true }))) throw new AppError(404, 'Active service not found');
@@ -199,8 +199,10 @@ exports.importQuestions = (kind) => asyncHandler(async (req, res) => {
 exports.sampleCsv = (kind) => (_req, res) => { res.type('text/csv').send(csvImport.samples[kind]); };
 exports.publishResults = asyncHandler(async (req, res) => {
   const slot = await slotForManage(req.params.id, req.user);
-  if (new Date() < slot.endDateTime) throw new AppError(409, 'Results can be published after the exam ends');
+  if (!slot.isAnytimeExam && new Date() < slot.endDateTime) throw new AppError(409, 'Results can be published after the exam ends');
   slot.resultPublished = true; slot.resultPublishedAt = new Date(); await slot.save();
-  await Submission.updateMany({ examSlot: slot._id }, { $set: { resultPublished: true } });
+  const filter = { examSlot: slot._id };
+  if (slot.isAnytimeExam && req.body.submissionId) filter._id = req.body.submissionId;
+  await Submission.updateMany(filter, { $set: { resultPublished: true } });
   res.json({ success: true, message: 'Results published', data: { resultPublished: true, resultPublishedAt: slot.resultPublishedAt } });
 });

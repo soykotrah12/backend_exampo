@@ -1,10 +1,11 @@
 const Submission = require('../models/Submission');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
+const attempts = require('../services/examAttemptService');
 
 const id = (value) => String(value?._id || value || '');
 const ids = (items = []) => items.map(id).filter(Boolean);
-const resultVisible = (slot) => slot && (slot.resultVisibilityMode === 'instant' || slot.resultPublished === true);
+const resultVisible = (slot, submission) => attempts.isSubmissionResultPublished(slot, submission);
 
 const assertScope = (user, { serviceId, batchId }) => {
   if (!user.organization) throw new AppError(404, 'Join an organization first');
@@ -47,13 +48,13 @@ const buildRanking = async (user, scope = {}, options = {}) => {
     .populate('student', 'name email avatarUrl batches')
     .populate('service', 'name')
     .populate('batch', 'name batchCode')
-    .populate({ path: 'examSlot', select: 'title totalMarks resultVisibilityMode resultPublished service assignedBatches examType', populate: { path: 'assignedBatches', select: 'name batchCode' } })
+    .populate({ path: 'examSlot', select: 'title totalMarks resultVisibilityMode resultPublished service assignedBatches examType isAnytimeExam', populate: { path: 'assignedBatches', select: 'name batchCode' } })
     .lean();
   const search = String(options.search || '').trim().toLowerCase();
   const grouped = new Map();
   submissions.forEach((submission) => {
     const slot = submission.examSlot;
-    if (!resultVisible(slot) && submission.resultPublished !== true) return;
+    if (!resultVisible(slot, submission)) return;
     if (slot?.examType !== 'mcq' && submission.status !== 'reviewed') return;
     if (scope.serviceId && id(submission.service || slot?.service) !== String(scope.serviceId)) return;
     if (scope.batchId && id(submission.batch) !== String(scope.batchId) && !ids(slot?.assignedBatches).includes(String(scope.batchId))) return;

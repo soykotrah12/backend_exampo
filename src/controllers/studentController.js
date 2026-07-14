@@ -8,8 +8,17 @@ const AppError = require('../utils/AppError');
 const access = require('../services/examAccessService');
 const scoring = require('../services/scoringService');
 const { withComputedExamStatus, getComputedExamStatus } = require('../utils/examStatus');
-const resultVisible = (slot) => slot.resultVisibilityMode === 'instant' || slot.resultPublished === true;
+const attempts = require('../services/examAttemptService');
+const resultVisible = (slot, submission) => attempts.isSubmissionResultPublished(slot, submission);
 const studentQuestion = (question) => ({ _id: question._id, questionNo: question.questionNo, type: question.type, questionText: question.questionText, statements: question.statements?.map((item) => ({ label: item.label, text: item.text })), options: question.options?.map((item) => ({ label: item.label, text: item.text })), marks: question.marks, wordLimit: question.wordLimit });
+
+const latestSubmissionSort = { attemptNumber: -1, submittedAt: -1, createdAt: -1 };
+
+const latestSubmissionFor = (examSlot, student) =>
+  Submission.findOne({ examSlot, student }).sort(latestSubmissionSort).lean();
+
+const responseAttemptFields = (slot, latestSubmission, options = {}) =>
+  attempts.buildStudentExamAccess({ slot, latestSubmission, ...options });
 
 const numberOrZero = (value) => {
   const number = Number(value);
@@ -102,31 +111,37 @@ const optionBreakdown = (question, answer, canShowCorrectAnswers) => {
 exports.listSlots = asyncHandler(async (req, res) => {
   if (!req.user.organization) return res.json({ success: true, data: [] });
   const slots = await ExamSlot.find({ organization: req.user.organization, status: { $in: ['published','ongoing','completed'] } }).populate('createdBy', 'name').populate('assignedBatches', 'name batchCode').populate('service', 'name color icon').lean();
-  const requests = await AccessRequest.find({ student: req.user._id }).lean(); const submissions = await Submission.find({ student: req.user._id }).select('examSlot submittedAt').lean();
-  const requestBySlot = new Map(requests.map((x) => [String(x.examSlot), x.status])); const submissionBySlot = new Map(submissions.map((x) => [String(x.examSlot), x]));
+  const slotIds = slots.map((slot) => slot._id);
+  const requests = await AccessRequest.find({ student: req.user._id }).lean(); const submissions = await Submission.find({ student: req.user._id, examSlot: { $in: slotIds } }).select('_id examSlot submittedAt status resultPublished attemptNumber').sort({ submittedAt: -1 }).lean();
+  const requestBySlot = new Map(requests.map((x) => [String(x.examSlot), x.status])); const submissionBySlot = new Map();
+  submissions.forEach((submission) => {
+    const key = String(submission.examSlot);
+    const current = submissionBySlot.get(key);
+    if (!current || attempts.attemptNumberOf(submission) > attempts.attemptNumberOf(current) || (attempts.attemptNumberOf(submission) === attempts.attemptNumberOf(current) && new Date(submission.submittedAt) > new Date(current.submittedAt))) {
+      submissionBySlot.set(key, submission);
+    }
+  });
   const now = new Date();
   const serverTime = now.toISOString();
   const data = await Promise.all(slots.map(async (slot) => {
     const submission = submissionBySlot.get(String(slot._id));
     const allowed = await access.hasAccess(slot, req.user._id);
     const temporalStatus = now < new Date(slot.startDateTime) ? 'Upcoming' : now > new Date(slot.endDateTime) ? 'Ended' : 'Ongoing';
+    const accessPayload = responseAttemptFields(slot, submission, { now, hasAccess: allowed, requestStatus: requestBySlot.get(String(slot._id)) });
     return {
       ...withComputedExamStatus(slot, now),
       serviceName: slot.service?.name || '',
       teacherName: slot.createdBy?.name || '',
       batchNames: (slot.assignedBatches || []).map((x) => x.name),
       serverTime,
-      temporalStatus,
-      submitted: Boolean(submission),
-      submissionId: submission?._id,
-      resultAvailable: Boolean(submission && resultVisible(slot)),
-      accessStatus: submission ? 'Submitted' : allowed ? 'Assigned' : requestBySlot.get(String(slot._id)) === 'pending' ? 'Requested' : 'Locked',
+      temporalStatus: slot.isAnytimeExam ? 'Anytime' : temporalStatus,
+      ...accessPayload,
     };
   }));
   res.json({ success: true, data });
 });
 exports.requestAccess = asyncHandler(async (req, res) => {
-  const slot = await ExamSlot.findById(req.params.id); if (!slot || !['upcoming','ongoing'].includes(getComputedExamStatus(slot))) throw new AppError(404, 'Published exam not found');
+  const slot = await ExamSlot.findById(req.params.id); if (!slot || !['upcoming','ongoing','anytime'].includes(getComputedExamStatus(slot))) throw new AppError(404, 'Published exam not found');
   if (!req.user.organization || String(req.user.organization) !== String(slot.organization)) throw new AppError(403, 'Please join the organization first using organization code.');
   if (await access.hasAccess(slot, req.user._id)) throw new AppError(409, 'You already have access');
   const request = await AccessRequest.findOneAndUpdate({ examSlot: slot._id, student: req.user._id }, { $set: { status: 'pending', organization: slot.organization }, $unset: { reviewedBy: 1, reviewedAt: 1 } }, { upsert: true, new: true });
@@ -134,36 +149,52 @@ exports.requestAccess = asyncHandler(async (req, res) => {
 });
 exports.getExam = asyncHandler(async (req, res) => {
   const slot = await ExamSlot.findById(req.params.id); if (!slot) throw new AppError(404, 'Exam not found');
-  if (!(await access.hasAccess(slot, req.user._id))) throw new AppError(403, 'You do not have access to this exam');
-  if (await Submission.exists({ examSlot: slot._id, student: req.user._id })) throw new AppError(409, 'This exam has already been submitted');
-  const now = new Date(); if (getComputedExamStatus(slot, now) !== 'ongoing') throw new AppError(403, 'The exam is not active');
+  const hasAccess = await access.hasAccess(slot, req.user._id);
+  if (!hasAccess) throw new AppError(403, 'You do not have access to this exam');
+  const now = new Date();
+  const latestSubmission = await latestSubmissionFor(slot._id, req.user._id);
+  const accessPayload = responseAttemptFields(slot, latestSubmission, { now, hasAccess });
+  if (!accessPayload.canStart) throw new AppError(slot.isAnytimeExam && latestSubmission ? 409 : 403, accessPayload.cannotStartMessage || 'The exam is not active');
   const questions = await Question.find({ examSlot: slot._id }).sort({ questionNo: 1 }).lean();
-  res.json({ success: true, data: { ...withComputedExamStatus(slot.toObject(), now), questions: questions.map(studentQuestion), serverTime: now.toISOString() } });
+  res.json({ success: true, data: { ...withComputedExamStatus(slot.toObject(), now), ...accessPayload, questions: questions.map(studentQuestion), serverTime: now.toISOString() } });
 });
 exports.submit = asyncHandler(async (req, res) => {
   const slot = await ExamSlot.findById(req.params.id); if (!slot) throw new AppError(404, 'Exam not found');
-  if (!(await access.hasAccess(slot, req.user._id))) throw new AppError(403, 'You do not have access to this exam');
-  if (await Submission.exists({ examSlot: slot._id, student: req.user._id })) throw new AppError(409, 'This exam has already been submitted');
-  const now = new Date(); const graceEnd = new Date(slot.endDateTime.getTime() + 60 * 1000);
-  if (now < slot.startDateTime || now > graceEnd) throw new AppError(403, 'The exam submission window is closed');
+  const hasAccess = await access.hasAccess(slot, req.user._id);
+  if (!hasAccess) throw new AppError(403, 'You do not have access to this exam');
+  const now = new Date();
+  const latestSubmission = await latestSubmissionFor(slot._id, req.user._id);
+  const accessPayload = responseAttemptFields(slot, latestSubmission, { now, hasAccess });
+  if (!accessPayload.canStart) throw new AppError(slot.isAnytimeExam && latestSubmission ? 409 : 403, accessPayload.cannotStartMessage || 'The exam is not active');
+  if (!slot.isAnytimeExam) {
+    const graceEnd = new Date(slot.endDateTime.getTime() + 60 * 1000);
+    if (now < slot.startDateTime || now > graceEnd) throw new AppError(403, 'The exam submission window is closed');
+  }
   const questions = await Question.find({ examSlot: slot._id }).select('+answerGuideline'); const result = scoring.validateAndScore(questions, req.body.answers || []);
   const batch = (slot.assignedBatches || []).find((id) => (req.user.batches || []).some((batchId) => String(batchId) === String(id))) || null;
   const percentage = slot.totalMarks > 0 ? Math.min(100, (result.mcqScore / slot.totalMarks) * 100) : 0;
-  const submission = await Submission.create({ examSlot: slot._id, student: req.user._id, organization: slot.organization, service: slot.service || null, batch, answers: result.answers, mcqScore: result.mcqScore, totalScore: result.mcqScore, percentage, resultPublished: resultVisible(slot), autoSubmitted: Boolean(req.body.autoSubmitted) });
-  res.status(201).json({ success: true, message: 'Exam submitted successfully', data: { id: submission._id, submittedAt: submission.submittedAt, resultAvailable: resultVisible(slot), ...(resultVisible(slot) && { mcqScore: submission.mcqScore }) } });
+  const attemptNumber = attempts.attemptNumberOf(latestSubmission) + 1;
+  const instantResult = attempts.isInstantResult(slot);
+  const submission = await Submission.create({ examSlot: slot._id, student: req.user._id, organization: slot.organization, service: slot.service || null, batch, attemptNumber, answers: result.answers, mcqScore: result.mcqScore, totalScore: result.mcqScore, percentage, resultPublished: instantResult, autoSubmitted: Boolean(req.body.autoSubmitted) });
+  if (slot.isAnytimeExam && !instantResult && slot.resultPublished) {
+    slot.resultPublished = false;
+    slot.resultPublishedAt = null;
+    await slot.save();
+  }
+  res.status(201).json({ success: true, message: 'Exam submitted successfully', data: { id: submission._id, submittedAt: submission.submittedAt, attemptNumber: submission.attemptNumber, resultAvailable: resultVisible(slot, submission), latestAttemptNumber: submission.attemptNumber, nextAttemptNumber: resultVisible(slot, submission) ? submission.attemptNumber + 1 : null, ...(resultVisible(slot, submission) && { mcqScore: submission.mcqScore }) } });
 });
 
 exports.results = asyncHandler(async (req, res) => {
   const submissions = await Submission.find({ student: req.user._id })
-    .populate('examSlot', 'title category startDateTime endDateTime totalMarks resultVisibilityMode resultPublished resultPublishedAt showCorrectAnswers showQuestionReview')
+    .populate('examSlot', 'title category startDateTime endDateTime totalMarks resultVisibilityMode resultPublished resultPublishedAt showCorrectAnswers showQuestionReview isAnytimeExam')
     .populate('service', 'name')
     .populate('batch', 'name batchCode')
     .sort({ submittedAt: -1 })
     .lean();
   const data = submissions.map((submission) => {
     if (!submission.examSlot) return null;
-    const visible = resultVisible(submission.examSlot);
-    return { _id: submission._id, examSlot: { _id: submission.examSlot._id, title: submission.examSlot.title, category: submission.examSlot.category, startDateTime: submission.examSlot.startDateTime, endDateTime: submission.examSlot.endDateTime }, service: submission.service, batch: submission.batch, submittedAt: submission.submittedAt, autoSubmitted: submission.autoSubmitted, resultAvailable: visible, status: visible ? (submission.status === 'reviewed' ? 'result_published' : 'pending_review') : 'submitted', totalMarks: submission.examSlot.totalMarks || 0, ...(visible && { mcqScore: submission.mcqScore, writtenScore: submission.writtenScore, totalScore: submission.totalScore, percentage: submission.percentage }) };
+    const visible = resultVisible(submission.examSlot, submission);
+    return { _id: submission._id, attemptNumber: attempts.attemptNumberOf(submission), examSlot: { _id: submission.examSlot._id, title: submission.examSlot.title, category: submission.examSlot.category, startDateTime: submission.examSlot.startDateTime, endDateTime: submission.examSlot.endDateTime, isAnytimeExam: submission.examSlot.isAnytimeExam === true }, service: submission.service, batch: submission.batch, submittedAt: submission.submittedAt, autoSubmitted: submission.autoSubmitted, resultAvailable: visible, resultPublished: visible, status: visible ? (submission.status === 'reviewed' || submission.resultPublished === true || attempts.isInstantResult(submission.examSlot) ? 'result_published' : 'pending_review') : 'submitted', totalMarks: submission.examSlot.totalMarks || 0, ...(visible && { mcqScore: submission.mcqScore, writtenScore: submission.writtenScore, totalScore: submission.totalScore, percentage: submission.percentage }) };
   }).filter(Boolean);
   res.json({ success: true, data });
 });
@@ -173,11 +204,11 @@ exports.resultDetail = asyncHandler(async (req, res) => {
   if (!submission) throw new AppError(404, 'Result not found');
   const slot = await ExamSlot.findById(submission.examSlot).populate('service', 'name').populate('assignedBatches', 'name batchCode').lean();
   if (!slot) throw new AppError(404, 'The exam for this result no longer exists');
-  if (!resultVisible(slot)) throw new AppError(403, 'Your result will be visible after the teacher publishes it');
+  if (!resultVisible(slot, submission)) throw new AppError(403, 'Your result will be visible after the teacher publishes it');
   const questions = await Question.find({ examSlot: slot._id }).select('+answerGuideline').sort({ questionNo: 1 }).lean();
   const answerByQuestion = new Map(submission.answers.map((answer) => [String(answer.questionId), answer]));
-  const canShowCorrectAnswers = resultVisible(slot);
-  const canShowQuestionReview = resultVisible(slot) && slot.showQuestionReview === true;
+  const canShowCorrectAnswers = resultVisible(slot, submission);
+  const canShowQuestionReview = resultVisible(slot, submission) && slot.showQuestionReview === true;
   const questionBreakdown = questions.map((question) => {
     const answer = answerByQuestion.get(String(question._id));
     const earnedMarks = roundMarks(answer?.earnedMarks ?? answer?.awardedMarks ?? 0);
@@ -222,19 +253,19 @@ exports.resultDetail = asyncHandler(async (req, res) => {
     return item;
   });
   const rank = 1 + await Submission.countDocuments({ examSlot: slot._id, totalScore: { $gt: submission.totalScore }, $or: [{ resultPublished: true }, { status: 'reviewed' }] });
-  const response = { _id: submission._id, examSlot: { _id: slot._id, title: slot.title, category: slot.category, startDateTime: slot.startDateTime, endDateTime: slot.endDateTime }, service: slot.service, batch: submission.batch ? await Batch.findById(submission.batch).select('name batchCode').lean() : null, submittedAt: submission.submittedAt, autoSubmitted: submission.autoSubmitted, mcqScore: submission.mcqScore, writtenScore: submission.writtenScore, totalScore: submission.totalScore, totalMarks: slot.totalMarks || questions.reduce((sum, question) => sum + Number(question.marks || 0), 0), percentage: submission.percentage, rank, reviewFeedback: submission.reviewFeedback, status: submission.status === 'reviewed' ? 'result_published' : 'pending_review', resultPublished: resultVisible(slot), showCorrectAnswers: canShowCorrectAnswers, showQuestionReview: canShowQuestionReview, questionBreakdown };
+  const response = { _id: submission._id, attemptNumber: attempts.attemptNumberOf(submission), examSlot: { _id: slot._id, title: slot.title, category: slot.category, startDateTime: slot.startDateTime, endDateTime: slot.endDateTime, isAnytimeExam: slot.isAnytimeExam === true }, service: slot.service, batch: submission.batch ? await Batch.findById(submission.batch).select('name batchCode').lean() : null, submittedAt: submission.submittedAt, autoSubmitted: submission.autoSubmitted, mcqScore: submission.mcqScore, writtenScore: submission.writtenScore, totalScore: submission.totalScore, totalMarks: slot.totalMarks || questions.reduce((sum, question) => sum + Number(question.marks || 0), 0), percentage: submission.percentage, rank, reviewFeedback: submission.reviewFeedback, status: submission.status === 'reviewed' || submission.resultPublished === true || attempts.isInstantResult(slot) ? 'result_published' : 'pending_review', resultPublished: resultVisible(slot, submission), showCorrectAnswers: canShowCorrectAnswers, showQuestionReview: canShowQuestionReview, questionBreakdown };
   res.json({ success: true, data: response });
 });
 
 exports.activity = asyncHandler(async (req, res) => {
   const [requests, submissions, upcoming] = await Promise.all([
     AccessRequest.find({ student: req.user._id }).populate('examSlot', 'title').sort({ updatedAt: -1 }).limit(20).lean(),
-    Submission.find({ student: req.user._id }).populate('examSlot', 'title resultPublished').sort({ submittedAt: -1 }).limit(20).lean(),
-    req.user.organization ? ExamSlot.find({ organization: req.user.organization, startDateTime: { $gt: new Date() }, status: 'published' }).sort({ startDateTime: 1 }).limit(5).lean() : [],
+    Submission.find({ student: req.user._id }).populate('examSlot', 'title resultPublished resultVisibilityMode isAnytimeExam').sort({ submittedAt: -1 }).limit(20).lean(),
+    req.user.organization ? ExamSlot.find({ organization: req.user.organization, startDateTime: { $gt: new Date() }, status: 'published', isAnytimeExam: { $ne: true } }).sort({ startDateTime: 1 }).limit(5).lean() : [],
   ]);
   const data = [
     ...requests.map((x) => ({ type: `access_request_${x.status}`, title: x.examSlot?.title || 'Exam', at: x.updatedAt })),
-    ...submissions.map((x) => ({ type: x.examSlot?.resultPublished ? 'result_published' : 'exam_submitted', title: x.examSlot?.title || 'Exam', at: x.submittedAt })),
+    ...submissions.map((x) => ({ type: resultVisible(x.examSlot, x) ? 'result_published' : 'exam_submitted', title: x.examSlot?.title || 'Exam', at: x.submittedAt })),
     ...upcoming.map((x) => ({ type: 'upcoming_exam', title: x.title, at: x.startDateTime })),
   ].sort((a, b) => new Date(b.at) - new Date(a.at));
   res.json({ success: true, data });

@@ -64,3 +64,17 @@ test('decorates exam responses with display status and server timestamp', () => 
   assert.equal(result.storedStatus, 'published');
   assert.equal(result.serverNow, now.toISOString());
 });
+
+test('keeps published anytime exams available after scheduled dates pass', () => {
+  const result = withComputedExamStatus({
+    status: 'published',
+    isAnytimeExam: true,
+    resultPublished: true,
+    startDateTime: '2026-07-10T09:00:00.000Z',
+    endDateTime: '2026-07-10T09:30:00.000Z',
+  }, now);
+
+  assert.equal(result.status, 'anytime');
+  assert.equal(result.computedStatus, 'anytime');
+  assert.equal(result.displayStatus, 'Anytime');
+});

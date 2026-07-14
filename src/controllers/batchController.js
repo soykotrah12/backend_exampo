@@ -110,7 +110,7 @@ exports.examSlots = asyncHandler(async (req, res) => {
     { category: { $regex: String(req.query.search), $options: 'i' } },
   ];
   const slots = await ExamSlot.find(query)
-    .select('title category mainCategory subCategory examType startDateTime endDateTime durationMinutes status assignedStudents assignedBatches service resultVisibilityMode resultPublished showCorrectAnswers showQuestionReview')
+    .select('title category mainCategory subCategory examType startDateTime endDateTime durationMinutes isAnytimeExam status assignedStudents assignedBatches service resultVisibilityMode resultPublished showCorrectAnswers showQuestionReview')
     .populate('assignedBatches', 'name batchCode')
     .populate('service', 'name color icon')
     .sort({ startDateTime: 1 })
