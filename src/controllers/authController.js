@@ -81,7 +81,7 @@ const throwIfCoolingDown = (date) => {
 
 const emailErrorToAppError = (error) => {
   if (error instanceof EmailConfigurationError || error.name === 'EmailConfigurationError') {
-    return new AppError(503, 'Email service is not configured');
+    return new AppError(503, error.message || 'Email service is not configured');
   }
   return new AppError(502, 'Unable to send email. Please try again later.');
 };

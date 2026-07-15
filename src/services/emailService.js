@@ -1,9 +1,15 @@
 const nodemailer = require('nodemailer');
 
 class EmailConfigurationError extends Error {
-  constructor() {
-    super('Email service is not configured');
+  constructor({ missingKeys = [], invalidKeys = [] } = {}) {
+    const details = [
+      missingKeys.length ? `Missing SMTP env keys: ${missingKeys.join(', ')}` : '',
+      invalidKeys.length ? `Invalid SMTP env keys: ${invalidKeys.join(', ')}` : '',
+    ].filter(Boolean).join('. ');
+    super(`Email service is not configured${details ? `. ${details}` : ''}`);
     this.name = 'EmailConfigurationError';
+    this.missingKeys = missingKeys;
+    this.invalidKeys = invalidKeys;
   }
 }
 
@@ -17,14 +23,25 @@ const escapeHtml = (value) => String(value || '')
   .replace(/'/g, '&#39;');
 
 const smtpConfig = () => {
-  const host = process.env.SMTP_HOST;
-  const port = Number(process.env.SMTP_PORT || 587);
-  const secure = String(process.env.SMTP_SECURE || 'false').toLowerCase() === 'true';
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
-  const from = process.env.SMTP_FROM || user;
-  if (!host || !port || !user || !pass || !from) throw new EmailConfigurationError();
-  return { host, port, secure, user, pass, from };
+  const host = String(process.env.SMTP_HOST || '').trim();
+  const portValue = String(process.env.SMTP_PORT || '').trim();
+  const port = Number(portValue);
+  const secure = String(process.env.SMTP_SECURE || 'false').trim().toLowerCase() === 'true';
+  const smtpUser = String(process.env.SMTP_USER || process.env.EMAIL_USER || '').trim();
+  const smtpPass = String(process.env.SMTP_PASS || process.env.EMAIL_PASS || '').replace(/\s/g, '');
+  const smtpFrom = String(process.env.SMTP_FROM || process.env.EMAIL_FROM || smtpUser || '').trim();
+  const missingKeys = [];
+  const invalidKeys = [];
+
+  if (!host) missingKeys.push('SMTP_HOST');
+  if (!portValue) missingKeys.push('SMTP_PORT');
+  if (!smtpUser) missingKeys.push('SMTP_USER or EMAIL_USER');
+  if (!smtpPass) missingKeys.push('SMTP_PASS or EMAIL_PASS');
+  if (!smtpFrom) missingKeys.push('SMTP_FROM or EMAIL_FROM');
+  if (portValue && (!Number.isInteger(port) || port < 1 || port > 65535)) invalidKeys.push('SMTP_PORT');
+
+  if (missingKeys.length || invalidKeys.length) throw new EmailConfigurationError({ missingKeys, invalidKeys });
+  return { host, port, secure, user: smtpUser, pass: smtpPass, from: smtpFrom };
 };
 
 let transporter;
@@ -100,6 +117,8 @@ const sendPasswordResetOtpEmail = ({ to, otp, expiresInMinutes }) => sendMail({
 
 module.exports = {
   EmailConfigurationError,
+  smtpConfig,
   sendSignupOtpEmail,
   sendPasswordResetOtpEmail,
+  resetEmailTransporter: () => { transporter = null; },
 };
