@@ -35,8 +35,18 @@ const OTP_MAX_ATTEMPTS = Number(process.env.AUTH_OTP_MAX_ATTEMPTS || 5);
 const RESET_TOKEN_EXPIRES_MINUTES = Number(process.env.PASSWORD_RESET_TOKEN_EXPIRES_MINUTES || 15);
 const INVALID_EMAIL_MESSAGE = 'Please enter a valid email address';
 const INCORRECT_EMAIL_MESSAGE = 'Incorrect email address';
+const REPLACE_DELETED_ACCOUNT_MESSAGE = 'Old deleted account removed. OTP sent to your email to create a new account.';
 
 const normalizeEmail = (email) => String(email || '').toLowerCase().trim();
+const isDuplicateEmailError = (error) => {
+  if (error?.code !== 11000) return false;
+  const keyPattern = error.keyPattern || {};
+  const keyValue = error.keyValue || {};
+  const message = String(error.message || '').toLowerCase();
+  return Object.prototype.hasOwnProperty.call(keyPattern, 'email') ||
+    Object.prototype.hasOwnProperty.call(keyValue, 'email') ||
+    message.includes('email');
+};
 const isValidEmailFormat = (email) => {
   const value = normalizeEmail(email);
   if (!value || value.length > 254 || value.includes('..')) return false;
@@ -244,6 +254,100 @@ const firebaseProfileName = (decoded) => {
   return email ? email.split('@')[0] : 'Google User';
 };
 
+const googleIdentityFromRequest = async (req) => {
+  const idToken = String(req.body.idToken || '').trim();
+  const provider = String(req.body.provider || '').toLowerCase().trim();
+
+  if (!idToken) throw new AppError(400, 'Firebase ID token is required');
+  if (provider !== 'google') throw new AppError(400, 'Only Google sign-in is supported');
+
+  let decoded;
+  try {
+    decoded = await verifyFirebaseIdToken(idToken);
+  } catch (error) {
+    throw firebaseErrorToAppError(error);
+  }
+
+  const firebaseUid = String(decoded.uid || '').trim();
+  const email = normalizeEmail(decoded.email);
+  const emailVerified = decoded.email_verified === true || decoded.emailVerified === true;
+  const picture = safeAvatarUrl(decoded.picture);
+  if (!firebaseUid) throw new AppError(401, 'Invalid Firebase token');
+  if (!email) throw new AppError(400, 'Google account email is required');
+  if (!emailVerified) throw new AppError(403, 'Google account email must be verified');
+
+  return { decoded, firebaseUid, email, picture };
+};
+
+const assertValidGoogleRole = (role, res) => {
+  if (['organization_owner', 'teacher', 'student'].includes(role)) return true;
+  res.status(400).json({
+    success: false,
+    message: 'Role is required',
+    data: { requiresRoleSelection: true },
+  });
+  return false;
+};
+
+const createGoogleUser = async ({ req, decoded, firebaseUid, email, picture, role }) => {
+  const userPayload = {
+    name: firebaseProfileName(decoded),
+    email,
+    role,
+    firebaseUid,
+    authProvider: 'google',
+    isEmailVerified: true,
+    avatarUrl: picture || '',
+  };
+
+  let user;
+  if (role === 'organization_owner') {
+    const plan = await permissions.ensureFreePlan();
+    const orgName = String(req.body.organizationName || decoded.name || userPayload.name).trim();
+    const orgPhone = String(req.body.organizationPhone || req.body.contactNumber || req.body.phone || '').trim();
+    const orgAddress = String(req.body.organizationAddress || req.body.address || '').trim();
+    const orgCategory = String(req.body.organizationCategory || req.body.category || req.body.organizationType || req.body.type || 'Other').trim();
+    try {
+      user = await User.create({
+        ...userPayload,
+        name: orgName,
+        phone: orgPhone,
+        contactNumber: orgPhone,
+        address: orgAddress,
+      });
+      const organization = await Organization.create({
+        name: orgName,
+        email,
+        phone: orgPhone,
+        contactNumber: orgPhone,
+        address: orgAddress,
+        category: orgCategory,
+        type: orgCategory,
+        description: String(req.body.description || '').trim(),
+        organizationCode: generateCode('ORG'),
+        owner: user._id,
+        plan: plan._id,
+        planSnapshot: planSnapshotFor(plan, 'free'),
+        subscriptionStatus: 'free',
+        subscriptionStartDate: new Date(),
+        verificationStatus: 'unverified',
+      });
+      user.organization = organization._id;
+      await user.save();
+    } catch (error) {
+      if (user?._id) await User.deleteOne({ _id: user._id });
+      throw error;
+    }
+  } else {
+    user = await User.create(userPayload);
+  }
+
+  user.lastLoginAt = new Date();
+  user.lastActiveAt = user.lastLoginAt;
+  await user.save();
+  return user;
+};
+
 const handleRegister = async (req, res, { successMessage, successStatus = 201 } = {}) => {
   const {
     name,
@@ -376,9 +480,32 @@ exports.replaceDeletedAccountAndRegister = asyncHandler(async (req, res) => {
   if (!existing || existing.isDeleted !== true) throw new AppError(404, 'Deleted account not found');
   if (!canRestoreDeletedUser(existing)) throw new AppError(410, 'This account can no longer be restored.');
   await permanentlyDeleteSoftDeletedAccount(existing);
-  return handleRegister(req, res, {
-    successMessage: 'Old deleted account removed. OTP sent to your email to create a new account.',
-  });
+  try {
+    return await handleRegister(req, res, {
+      successMessage: REPLACE_DELETED_ACCOUNT_MESSAGE,
+    });
+  } catch (error) {
+    if (!isDuplicateEmailError(error)) throw error;
+
+    const conflictingUser = await User.findOne({ email });
+    if (conflictingUser?.isDeleted === true) {
+      await permanentlyDeleteSoftDeletedAccount(conflictingUser);
+      return handleRegister(req, res, {
+        successMessage: REPLACE_DELETED_ACCOUNT_MESSAGE,
+      });
+    }
+
+    if (conflictingUser && requiresEmailVerification(conflictingUser)) {
+      await sendEmailVerificationOtp(conflictingUser, { ignoreCooldown: true });
+      return res.status(200).json({
+        success: true,
+        message: REPLACE_DELETED_ACCOUNT_MESSAGE,
+        data: { email: conflictingUser.email, requiresOtpVerification: true },
+      });
+    }
+
+    throw new AppError(409, 'Account already exists. Please sign in.');
+  }
 });
 
 exports.verifyOtp = asyncHandler(async (req, res) => {
@@ -467,27 +594,9 @@ exports.login = asyncHandler(async (req, res) => {
 });
 
 exports.firebaseLogin = asyncHandler(async (req, res) => {
-  const idToken = String(req.body.idToken || '').trim();
-  const provider = String(req.body.provider || '').toLowerCase().trim();
   const requestedRole = String(req.body.role || '').trim();
-
-  if (!idToken) throw new AppError(400, 'Firebase ID token is required');
-  if (provider !== 'google') throw new AppError(400, 'Only Google sign-in is supported');
-
-  let decoded;
-  try {
-    decoded = await verifyFirebaseIdToken(idToken);
-  } catch (error) {
-    throw firebaseErrorToAppError(error);
-  }
-
-  const firebaseUid = String(decoded.uid || '').trim();
-  const email = normalizeEmail(decoded.email);
-  const emailVerified = decoded.email_verified === true || decoded.emailVerified === true;
-  const picture = safeAvatarUrl(decoded.picture);
-  if (!firebaseUid) throw new AppError(401, 'Invalid Firebase token');
-  if (!email) throw new AppError(400, 'Google account email is required');
-  if (!emailVerified) throw new AppError(403, 'Google account email must be verified');
+  const identity = await googleIdentityFromRequest(req);
+  const { decoded, firebaseUid, email, picture } = identity;
 
   let user = await User.findOne({
     $or: [{ firebaseUid }, { email }],
@@ -498,99 +607,77 @@ exports.firebaseLogin = asyncHandler(async (req, res) => {
       if (canRestoreDeletedUser(user)) {
         return res.status(403).json({
           success: false,
-          message: 'This account was deleted. You can restore it within 30 days.',
-          data: deletedAccountData(user),
+          message: 'A deleted account already exists with this Google email.',
+          data: deletedAccountData(user, {
+            deletedAccountConflict: true,
+            canPermanentDeleteOldAccount: true,
+            provider: 'google',
+          }),
         });
       }
-      return res.status(403).json({
-        success: false,
-        message: 'This account can no longer be restored.',
-      });
+      await permanentlyDeleteSoftDeletedAccount(user);
+      user = null;
     }
-    if (!user.isActive) throw new AppError(401, 'User account is unavailable');
-    if (!user.firebaseUid) user.firebaseUid = firebaseUid;
-    user.isEmailVerified = true;
-    user.emailVerificationStartedAt = null;
-    user.emailOtpHash = '';
-    user.emailOtpExpiresAt = null;
-    user.emailOtpAttempts = 0;
-    user.lastOtpSentAt = null;
-    if (!user.avatarUrl && picture) user.avatarUrl = picture;
-    user.lastLoginAt = new Date();
-    user.lastActiveAt = user.lastLoginAt;
-    await user.save();
-    return res.json({
-      success: true,
-      message: 'Google sign-in successful',
-      data: authPayload(user),
-    });
-  }
-
-  if (!['organization_owner', 'teacher', 'student'].includes(requestedRole)) {
-    return res.status(400).json({
-      success: false,
-      message: 'Role is required',
-      data: { requiresRoleSelection: true },
-    });
-  }
-
-  const userPayload = {
-    name: firebaseProfileName(decoded),
-    email,
-    role: requestedRole,
-    firebaseUid,
-    authProvider: 'google',
-    isEmailVerified: true,
-    avatarUrl: picture || '',
-  };
-
-  if (requestedRole === 'organization_owner') {
-    const plan = await permissions.ensureFreePlan();
-    const orgName = String(req.body.organizationName || decoded.name || userPayload.name).trim();
-    const orgPhone = String(req.body.organizationPhone || req.body.contactNumber || req.body.phone || '').trim();
-    const orgAddress = String(req.body.organizationAddress || req.body.address || '').trim();
-    const orgCategory = String(req.body.organizationCategory || req.body.category || req.body.organizationType || req.body.type || 'Other').trim();
-    try {
-      user = await User.create({
-        ...userPayload,
-        name: orgName,
-        phone: orgPhone,
-        contactNumber: orgPhone,
-        address: orgAddress,
-      });
-      const organization = await Organization.create({
-        name: orgName,
-        email,
-        phone: orgPhone,
-        contactNumber: orgPhone,
-        address: orgAddress,
-        category: orgCategory,
-        type: orgCategory,
-        description: String(req.body.description || '').trim(),
-        organizationCode: generateCode('ORG'),
-        owner: user._id,
-        plan: plan._id,
-        planSnapshot: planSnapshotFor(plan, 'free'),
-        subscriptionStatus: 'free',
-        subscriptionStartDate: new Date(),
-        verificationStatus: 'unverified',
-      });
-      user.organization = organization._id;
+    if (user) {
+      if (!user.isActive) throw new AppError(401, 'User account is unavailable');
+      if (!user.firebaseUid) user.firebaseUid = firebaseUid;
+      user.isEmailVerified = true;
+      user.emailVerificationStartedAt = null;
+      user.emailOtpHash = '';
+      user.emailOtpExpiresAt = null;
+      user.emailOtpAttempts = 0;
+      user.lastOtpSentAt = null;
+      if (!user.avatarUrl && picture) user.avatarUrl = picture;
+      user.lastLoginAt = new Date();
+      user.lastActiveAt = user.lastLoginAt;
       await user.save();
-    } catch (error) {
-      if (user?._id) await User.deleteOne({ _id: user._id });
-      throw error;
+      return res.json({
+        success: true,
+        message: 'Google sign-in successful',
+        data: authPayload(user),
+      });
     }
-  } else {
-    user = await User.create(userPayload);
   }
 
-  user.lastLoginAt = new Date();
-  user.lastActiveAt = user.lastLoginAt;
-  await user.save();
+  if (!assertValidGoogleRole(requestedRole, res)) return;
+  user = await createGoogleUser({
+    req,
+    decoded,
+    firebaseUid,
+    email,
+    picture,
+    role: requestedRole,
+  });
   res.status(201).json({
     success: true,
     message: 'Google sign-in successful',
+    data: authPayload(user),
+  });
+});
+
+exports.replaceDeletedAccountAndFirebaseLogin = asyncHandler(async (req, res) => {
+  const requestedRole = String(req.body.role || '').trim();
+  const identity = await googleIdentityFromRequest(req);
+  const { decoded, firebaseUid, email, picture } = identity;
+
+  const existing = await User.findOne({ email });
+  if (!existing || existing.isDeleted !== true) throw new AppError(404, 'Deleted account not found');
+  if (!canRestoreDeletedUser(existing)) throw new AppError(410, 'This account can no longer be restored.');
+  if (!assertValidGoogleRole(requestedRole, res)) return;
+
+  await permanentlyDeleteSoftDeletedAccount(existing);
+  const user = await createGoogleUser({
+    req,
+    decoded,
+    firebaseUid,
+    email,
+    picture,
+    role: requestedRole,
+  });
+
+  res.status(201).json({
+    success: true,
+    message: 'Old deleted account removed. New Google account created successfully.',
     data: authPayload(user),
   });
 });

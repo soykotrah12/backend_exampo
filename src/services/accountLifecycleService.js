@@ -125,7 +125,10 @@ const permanentlyDeleteSoftDeletedAccount = async (user) => {
   if (user.role === 'organization_owner' && organizationId) {
     await Organization.deleteOne({ _id: organizationId, owner: user._id });
   }
-  await User.deleteOne({ _id: user._id, isDeleted: true });
+  const deleteResult = await User.deleteOne({ _id: user._id, isDeleted: true });
+  if (deleteResult.deletedCount !== 1) {
+    throw new AppError(409, 'Unable to remove the deleted account. Please try again.');
+  }
 };
 
 module.exports = {
