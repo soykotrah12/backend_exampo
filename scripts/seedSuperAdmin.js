@@ -40,6 +40,11 @@ async function seedSuperAdmin() {
       changed = true;
     }
 
+    if (existing.isEmailVerified !== true) {
+      existing.isEmailVerified = true;
+      changed = true;
+    }
+
     if (changed) {
       await existing.save();
     }
@@ -54,6 +59,7 @@ async function seedSuperAdmin() {
     password,
     role: 'super_admin',
     isActive: true,
+    isEmailVerified: true,
   });
 
   console.log('Super admin created');

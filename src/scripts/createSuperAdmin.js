@@ -19,10 +19,11 @@ const main = async () => {
     existing.role = 'super_admin';
     existing.name = existing.name || name;
     existing.isActive = true;
+    existing.isEmailVerified = true;
     await existing.save();
     console.log(`Updated existing super admin: ${email}`);
   } else {
-    await User.create({ name, email, password, role: 'super_admin' });
+    await User.create({ name, email, password, role: 'super_admin', isEmailVerified: true });
     console.log(`Created super admin: ${email}`);
   }
   await mongoose.disconnect();

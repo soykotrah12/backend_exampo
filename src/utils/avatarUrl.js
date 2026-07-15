@@ -22,9 +22,25 @@ const isAzureBlobUrl = (value) => {
   }
 };
 
+const isGoogleAvatarUrl = (value) => {
+  try {
+    const url = new URL(String(value || '').trim());
+    return (
+      url.protocol === 'https:' &&
+      !isPrivateOrLocalHost(url.hostname) &&
+      (
+        url.hostname === 'lh3.googleusercontent.com' ||
+        url.hostname.endsWith('.googleusercontent.com')
+      )
+    );
+  } catch (_) {
+    return false;
+  }
+};
+
 const safeAvatarUrl = (value) => {
   const raw = String(value || '').trim();
-  return isAzureBlobUrl(raw) ? raw : null;
+  return isAzureBlobUrl(raw) || isGoogleAvatarUrl(raw) ? raw : null;
 };
 
 const withSafeAvatarUrl = (user) => {
@@ -35,6 +51,7 @@ const withSafeAvatarUrl = (user) => {
 
 module.exports = {
   isAzureBlobUrl,
+  isGoogleAvatarUrl,
   safeAvatarUrl,
   withSafeAvatarUrl,
 };

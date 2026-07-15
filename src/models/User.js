@@ -4,7 +4,14 @@ const bcrypt = require('bcrypt');
 const schema = new mongoose.Schema({
   name: { type: String, required: true, trim: true, maxlength: 100 },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-  password: { type: String, required: true, select: false, minlength: 8 },
+  password: {
+    type: String,
+    required() { return (this.authProvider || 'local') === 'local'; },
+    select: false,
+    minlength: 8,
+  },
+  firebaseUid: { type: String, unique: true, sparse: true, trim: true },
+  authProvider: { type: String, enum: ['local', 'google', 'facebook'], default: 'local' },
   role: { type: String, enum: ['organization_owner', 'teacher', 'student', 'super_admin'], required: true },
   organization: { type: mongoose.Schema.Types.ObjectId, ref: 'Organization', default: null },
   joinedOrganizations: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Organization' }],
@@ -23,6 +30,18 @@ const schema = new mongoose.Schema({
   location: { type: String, default: '', maxlength: 150 },
   avatarUrl: { type: String, default: '' },
   invitedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  isEmailVerified: { type: Boolean, default: false },
+  emailVerificationStartedAt: { type: Date, default: null },
+  emailOtpHash: { type: String, default: '', select: false },
+  emailOtpExpiresAt: { type: Date, default: null },
+  emailOtpAttempts: { type: Number, default: 0 },
+  lastOtpSentAt: { type: Date, default: null },
+  passwordResetOtpHash: { type: String, default: '', select: false },
+  passwordResetOtpExpiresAt: { type: Date, default: null },
+  passwordResetOtpAttempts: { type: Number, default: 0 },
+  passwordResetLastOtpSentAt: { type: Date, default: null },
+  passwordResetTokenHash: { type: String, default: '', select: false },
+  passwordResetTokenExpiresAt: { type: Date, default: null },
   isActive: { type: Boolean, default: true },
   deletedAt: { type: Date, default: null },
   deletedEmail: { type: String, default: '', trim: true },
@@ -31,9 +50,28 @@ const schema = new mongoose.Schema({
   tokenVersion: { type: Number, default: 0 },
 }, { timestamps: true });
 schema.pre('save', async function hash(next) {
-  if (this.isModified('password')) this.password = await bcrypt.hash(this.password, 12);
+  if (this.isModified('password') && this.password) this.password = await bcrypt.hash(this.password, 12);
   next();
 });
-schema.methods.comparePassword = function comparePassword(value) { return bcrypt.compare(value, this.password); };
-schema.methods.toSafeJSON = function safe() { const value = this.toObject(); delete value.password; delete value.tokenVersion; return value; };
+schema.methods.comparePassword = function comparePassword(value) {
+  if (!this.password) return false;
+  return bcrypt.compare(value, this.password);
+};
+schema.methods.toSafeJSON = function safe() {
+  const value = this.toObject();
+  delete value.password;
+  delete value.tokenVersion;
+  delete value.firebaseUid;
+  delete value.emailOtpHash;
+  delete value.emailOtpExpiresAt;
+  delete value.emailOtpAttempts;
+  delete value.lastOtpSentAt;
+  delete value.passwordResetOtpHash;
+  delete value.passwordResetOtpExpiresAt;
+  delete value.passwordResetOtpAttempts;
+  delete value.passwordResetLastOtpSentAt;
+  delete value.passwordResetTokenHash;
+  delete value.passwordResetTokenExpiresAt;
+  return value;
+};
 module.exports = mongoose.model('User', schema);

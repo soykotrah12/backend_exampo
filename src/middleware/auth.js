@@ -3,16 +3,33 @@ const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 
+const requiresEmailVerification = (user) => Boolean(
+  user &&
+  user.isEmailVerified === false &&
+  user.emailVerificationStartedAt,
+);
+
+const markLegacyEmailVerified = (user) => {
+  if (!user || user.isEmailVerified === true || user.emailVerificationStartedAt) return false;
+  user.isEmailVerified = true;
+  return true;
+};
+
 exports.auth = asyncHandler(async (req, _res, next) => {
   const [scheme, token] = (req.headers.authorization || '').split(' ');
   if (scheme !== 'Bearer' || !token) throw new AppError(401, 'Authentication required');
   let payload;
   try { payload = jwt.verify(token, process.env.JWT_SECRET || 'development-only-secret'); }
   catch (_) { throw new AppError(401, 'Invalid or expired token'); }
+  if (payload.type && payload.type !== 'access') throw new AppError(401, 'Invalid or expired token');
   const user = await User.findById(payload.sub);
   if (!user || !user.isActive) throw new AppError(401, 'User account is unavailable');
+  if (requiresEmailVerification(user)) throw new AppError(403, 'Please verify your email before continuing.');
+  const shouldSaveLegacyVerification = markLegacyEmailVerified(user);
   if (!user.lastActiveAt || Date.now() - new Date(user.lastActiveAt).getTime() > 15 * 60 * 1000) {
     user.lastActiveAt = new Date();
+    user.save().catch(() => {});
+  } else if (shouldSaveLegacyVerification) {
     user.save().catch(() => {});
   }
   req.user = user;

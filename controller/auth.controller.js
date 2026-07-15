@@ -76,8 +76,6 @@ export const login = catchAsync(async (req, res) => {
       "Email or userId and password are required",
     );
   }
-  console.log(email, userId, password);
-
   const query = email ? { email } : { userId };
   const user = await User.findOne(query).select("+password +verificationInfo");
   if (!user) {
@@ -245,7 +243,6 @@ export const verifyEmail = catchAsync(async (req, res) => {
       user.verificationInfo.token,
       process.env.OTP_SECRET,
     );
-    console.log(savedOTP);
     if (otp === savedOTP.otp) {
       user.verificationInfo.token = "";
       await user.save();

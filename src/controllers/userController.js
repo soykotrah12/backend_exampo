@@ -79,7 +79,7 @@ exports.invite = asyncHandler(async (req, res) => {
   await permissions.assertUserLimit(req.user.organization, role);
   let user = await User.findOne({ email: String(req.body.email || '').toLowerCase() });
   if (user && user.organization && user.organization.toString() !== req.user.organization.toString()) throw new AppError(409, 'User belongs to another organization');
-  if (!user) user = await User.create({ name: req.body.name || req.body.email.split('@')[0], email: req.body.email, password: req.body.temporaryPassword || `Temp-${Date.now()}`, role, organization: req.user.organization, invitedBy: req.user._id });
+  if (!user) user = await User.create({ name: req.body.name || req.body.email.split('@')[0], email: req.body.email, password: req.body.temporaryPassword || `Temp-${Date.now()}`, role, organization: req.user.organization, invitedBy: req.user._id, isEmailVerified: true });
   else { user.organization = req.user.organization; user.role = role; user.invitedBy = req.user._id; await user.save(); }
   const Organization = require('../models/Organization');
   await Organization.updateOne({ _id: req.user.organization }, { $addToSet: { [role === 'teacher' ? 'teachers' : 'students']: user._id } });
