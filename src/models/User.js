@@ -43,7 +43,18 @@ const schema = new mongoose.Schema({
   passwordResetTokenHash: { type: String, default: '', select: false },
   passwordResetTokenExpiresAt: { type: Date, default: null },
   isActive: { type: Boolean, default: true },
+  isDeleted: { type: Boolean, default: false, index: true },
   deletedAt: { type: Date, default: null },
+  deleteRestoreExpiresAt: { type: Date, default: null },
+  accountStatus: { type: String, enum: ['active', 'deleted'], default: 'active', index: true },
+  deleteAccountOtpHash: { type: String, default: '', select: false },
+  deleteAccountOtpExpiresAt: { type: Date, default: null },
+  deleteAccountOtpAttempts: { type: Number, default: 0 },
+  deleteAccountOtpRequestedAt: { type: Date, default: null },
+  restoreAccountOtpHash: { type: String, default: '', select: false },
+  restoreAccountOtpExpiresAt: { type: Date, default: null },
+  restoreAccountOtpAttempts: { type: Number, default: 0 },
+  lastRestoreOtpSentAt: { type: Date, default: null },
   deletedEmail: { type: String, default: '', trim: true },
   lastLoginAt: { type: Date, default: null },
   lastActiveAt: { type: Date, default: null },
@@ -72,6 +83,14 @@ schema.methods.toSafeJSON = function safe() {
   delete value.passwordResetLastOtpSentAt;
   delete value.passwordResetTokenHash;
   delete value.passwordResetTokenExpiresAt;
+  delete value.deleteAccountOtpHash;
+  delete value.deleteAccountOtpExpiresAt;
+  delete value.deleteAccountOtpAttempts;
+  delete value.deleteAccountOtpRequestedAt;
+  delete value.restoreAccountOtpHash;
+  delete value.restoreAccountOtpExpiresAt;
+  delete value.restoreAccountOtpAttempts;
+  delete value.lastRestoreOtpSentAt;
   return value;
 };
 module.exports = mongoose.model('User', schema);

@@ -22,6 +22,9 @@ router.post('/auth/login', requireFields('email','password'), authController.log
 router.post('/auth/firebase-login', requireFields('idToken','provider'), authController.firebaseLogin);
 router.post('/auth/verify-otp', requireFields('email','otp'), authController.verifyOtp);
 router.post('/auth/resend-otp', requireFields('email'), authController.resendOtp);
+router.post('/auth/restore-account/request', requireFields('email'), authController.requestRestoreAccount);
+router.post('/auth/restore-account/confirm', requireFields('email','otp'), authController.confirmRestoreAccount);
+router.post('/auth/register/replace-deleted-account', requireFields('name','email','password','role'), authController.replaceDeletedAccountAndRegister);
 router.post('/auth/forgot-password', requireFields('email'), authController.forgotPassword);
 router.post('/auth/verify-reset-otp', requireFields('email','otp'), authController.verifyResetOtp);
 router.post('/auth/reset-password', requireFields('resetToken'), authController.resetPassword);
@@ -35,6 +38,9 @@ router.post('/v1/auth/login', requireFields('email','password'), authController.
 router.post('/v1/auth/firebase-login', requireFields('idToken','provider'), authController.firebaseLogin);
 router.post('/v1/auth/verify-otp', requireFields('email','otp'), authController.verifyOtp);
 router.post('/v1/auth/resend-otp', requireFields('email'), authController.resendOtp);
+router.post('/v1/auth/restore-account/request', requireFields('email'), authController.requestRestoreAccount);
+router.post('/v1/auth/restore-account/confirm', requireFields('email','otp'), authController.confirmRestoreAccount);
+router.post('/v1/auth/register/replace-deleted-account', requireFields('name','email','password','role'), authController.replaceDeletedAccountAndRegister);
 router.post('/v1/auth/forgot-password', requireFields('email'), authController.forgotPassword);
 router.post('/v1/auth/verify-reset-otp', requireFields('email','otp'), authController.verifyResetOtp);
 router.post('/v1/auth/reset-password', requireFields('resetToken'), authController.resetPassword);
@@ -46,6 +52,8 @@ router.get('/v1/auth/me', auth, authController.me);
 router.get('/users/me', auth, authController.me);
 router.patch('/users/me', auth, userController.updateMe);
 router.post('/users/me/avatar', auth, avatarUpload, userController.uploadAvatar);
+router.post('/users/me/delete-request', auth, userController.requestDeleteAccountOtp);
+router.post('/users/me/delete-confirm', auth, requireFields('otp'), userController.confirmDeleteAccount);
 router.get('/organizations/me', auth, organization.me);
 router.patch('/organizations/me', auth, allowRoles('organization_owner'), organization.updateMe);
 router.post('/organizations/me/logo', auth, allowRoles('organization_owner'), express.raw({ type: ['image/jpeg','image/png','image/webp'], limit: '3mb' }), organization.uploadLogo);

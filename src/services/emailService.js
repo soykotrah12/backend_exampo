@@ -180,6 +180,30 @@ const sendPasswordResetOtpEmail = ({ to, otp, expiresInMinutes }) => sendMail({
   }),
 });
 
+const sendDeleteAccountOtpEmail = ({ to, otp, expiresInMinutes }) => sendMail({
+  to,
+  subject: `Delete your ${appName} account`,
+  text: `Your ${appName} account deletion code is ${otp}. It expires in ${expiresInMinutes} minutes. Do not share this code.`,
+  html: otpTemplate({
+    title: `Delete your ${appName} account`,
+    intro: `Use this one-time code to confirm deletion of your ${appName} account.`,
+    otp,
+    expiresInMinutes,
+  }),
+});
+
+const sendRestoreAccountOtpEmail = ({ to, otp, expiresInMinutes }) => sendMail({
+  to,
+  subject: `Restore your ${appName} account`,
+  text: `Your ${appName} account restore code is ${otp}. It expires in ${expiresInMinutes} minutes. Do not share this code.`,
+  html: otpTemplate({
+    title: `Restore your ${appName} account`,
+    intro: `Use this one-time code to restore your ${appName} account.`,
+    otp,
+    expiresInMinutes,
+  }),
+});
+
 module.exports = {
   EmailAuthenticationError,
   EmailConfigurationError,
@@ -189,5 +213,7 @@ module.exports = {
   smtpConfig,
   sendSignupOtpEmail,
   sendPasswordResetOtpEmail,
+  sendDeleteAccountOtpEmail,
+  sendRestoreAccountOtpEmail,
   resetEmailTransporter: () => { transporter = null; },
 };

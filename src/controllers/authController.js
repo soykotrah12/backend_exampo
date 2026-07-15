@@ -14,12 +14,19 @@ const {
   EmailDeliveryError,
   EmailRecipientError,
   sendPasswordResetOtpEmail,
+  sendRestoreAccountOtpEmail,
   sendSignupOtpEmail,
 } = require('../services/emailService');
 const {
   FirebaseAdminConfigurationError,
   verifyFirebaseIdToken,
 } = require('../services/firebaseAdminService');
+const {
+  canRestoreDeletedUser,
+  deletedAccountData,
+  permanentlyDeleteSoftDeletedAccount,
+  restoreAccount,
+} = require('../services/accountLifecycleService');
 
 const OTP_LENGTH = Math.min(Math.max(Number(process.env.AUTH_OTP_LENGTH || 6), 4), 8);
 const OTP_EXPIRES_MINUTES = Number(process.env.AUTH_OTP_EXPIRES_MINUTES || 10);
@@ -54,7 +61,7 @@ const tokenSecret = () => process.env.JWT_SECRET || 'development-only-secret';
 const refreshTokenSecret = () => process.env.JWT_REFRESH_SECRET || tokenSecret();
 
 const tokenFor = (user, type = 'access') => jwt.sign(
-  { sub: user._id.toString(), role: user.role, type },
+  { sub: user._id.toString(), role: user.role, type, tokenVersion: Number(user.tokenVersion || 0) },
   type === 'refresh' ? refreshTokenSecret() : tokenSecret(),
   { expiresIn: type === 'refresh' ? (process.env.JWT_REFRESH_EXPIRES_IN || '30d') : (process.env.JWT_EXPIRES_IN || '7d') },
 );
@@ -165,6 +172,27 @@ const sendPasswordResetOtp = async (user) => {
   }
 };
 
+const sendRestoreAccountOtp = async (user) => {
+  throwIfCoolingDown(user.lastRestoreOtpSentAt);
+  const otp = createOtp();
+  user.restoreAccountOtpHash = await bcrypt.hash(otp, 12);
+  user.restoreAccountOtpExpiresAt = addMinutes(OTP_EXPIRES_MINUTES);
+  user.restoreAccountOtpAttempts = 0;
+  user.lastRestoreOtpSentAt = new Date();
+  await user.save();
+  try {
+    await sendRestoreAccountOtpEmail({
+      to: user.email,
+      otp,
+      expiresInMinutes: OTP_EXPIRES_MINUTES,
+    });
+  } catch (error) {
+    user.lastRestoreOtpSentAt = null;
+    await user.save().catch(() => {});
+    throw emailErrorToAppError(error);
+  }
+};
+
 const cleanupNewUnverifiedSignup = async ({ user, organization }) => {
   if (!user?._id || user.isEmailVerified === true) return;
   const cleanupTasks = [User.deleteOne({ _id: user._id, isEmailVerified: false }).catch(() => {})];
@@ -216,7 +244,7 @@ const firebaseProfileName = (decoded) => {
   return email ? email.split('@')[0] : 'Google User';
 };
 
-exports.register = asyncHandler(async (req, res) => {
+const handleRegister = async (req, res, { successMessage, successStatus = 201 } = {}) => {
   const {
     name,
     email,
@@ -242,15 +270,28 @@ exports.register = asyncHandler(async (req, res) => {
 
   const existing = await User.findOne({ email: loginEmail });
   if (existing) {
-    if (requiresEmailVerification(existing)) {
+    if (existing.isDeleted === true) {
+      if (canRestoreDeletedUser(existing)) {
+        return res.status(409).json({
+          success: false,
+          message: 'A deleted account already exists with this email.',
+          data: deletedAccountData(existing, {
+            deletedAccountConflict: true,
+            canPermanentDeleteOldAccount: true,
+          }),
+        });
+      }
+      await permanentlyDeleteSoftDeletedAccount(existing);
+    } else if (requiresEmailVerification(existing)) {
       await sendEmailVerificationOtp(existing, { ignoreCooldown: true });
       return res.status(200).json({
         success: true,
         message: 'OTP sent to your email. Please verify your account.',
         data: { email: existing.email, requiresOtpVerification: true },
       });
+    } else {
+      throw new AppError(409, 'Account already exists. Please sign in.');
     }
-    throw new AppError(409, 'Account already exists. Please sign in.');
   }
 
   let user;
@@ -317,10 +358,26 @@ exports.register = asyncHandler(async (req, res) => {
     if (createdForSignup) await cleanupNewUnverifiedSignup({ user, organization });
     throw error;
   }
-  res.status(201).json({
+  res.status(successStatus).json({
     success: true,
-    message: 'OTP sent to your email. Please verify your account.',
+    message: successMessage || 'OTP sent to your email. Please verify your account.',
     data: { email: user.email, requiresOtpVerification: true },
+  });
+};
+
+exports.register = asyncHandler(handleRegister);
+
+exports.replaceDeletedAccountAndRegister = asyncHandler(async (req, res) => {
+  const role = req.body.role;
+  if (!['organization_owner','teacher','student'].includes(role)) throw new AppError(400, 'Invalid registration role');
+  const email = normalizeEmail(role === 'organization_owner' ? (req.body.organizationEmail || req.body.email) : req.body.email);
+  assertValidEmail(email);
+  const existing = await User.findOne({ email });
+  if (!existing || existing.isDeleted !== true) throw new AppError(404, 'Deleted account not found');
+  if (!canRestoreDeletedUser(existing)) throw new AppError(410, 'This account can no longer be restored.');
+  await permanentlyDeleteSoftDeletedAccount(existing);
+  return handleRegister(req, res, {
+    successMessage: 'Old deleted account removed. OTP sent to your email to create a new account.',
   });
 });
 
@@ -381,6 +438,20 @@ exports.login = asyncHandler(async (req, res) => {
   const email = normalizeEmail(req.body.email);
   const user = await User.findOne({ email }).select('+password');
   if (!user || !(await user.comparePassword(req.body.password || ''))) throw new AppError(401, 'Invalid email or password');
+  if (user.isDeleted === true) {
+    if (canRestoreDeletedUser(user)) {
+      return res.status(403).json({
+        success: false,
+        message: 'This account was deleted. You can restore it within 30 days.',
+        data: deletedAccountData(user),
+      });
+    }
+    return res.status(403).json({
+      success: false,
+      message: 'This account can no longer be restored.',
+    });
+  }
+  if (!user.isActive) throw new AppError(401, 'User account is unavailable');
   if (requiresEmailVerification(user)) {
     return res.status(403).json({
       success: false,
@@ -423,6 +494,20 @@ exports.firebaseLogin = asyncHandler(async (req, res) => {
   });
 
   if (user) {
+    if (user.isDeleted === true) {
+      if (canRestoreDeletedUser(user)) {
+        return res.status(403).json({
+          success: false,
+          message: 'This account was deleted. You can restore it within 30 days.',
+          data: deletedAccountData(user),
+        });
+      }
+      return res.status(403).json({
+        success: false,
+        message: 'This account can no longer be restored.',
+      });
+    }
+    if (!user.isActive) throw new AppError(401, 'User account is unavailable');
     if (!user.firebaseUid) user.firebaseUid = firebaseUid;
     user.isEmailVerified = true;
     user.emailVerificationStartedAt = null;
@@ -506,6 +591,43 @@ exports.firebaseLogin = asyncHandler(async (req, res) => {
   res.status(201).json({
     success: true,
     message: 'Google sign-in successful',
+    data: authPayload(user),
+  });
+});
+
+exports.requestRestoreAccount = asyncHandler(async (req, res) => {
+  const email = normalizeEmail(req.body.email);
+  assertValidEmail(email);
+  const user = await User.findOne({ email });
+  if (!user || user.isDeleted !== true) throw new AppError(404, 'Deleted account not found');
+  if (!canRestoreDeletedUser(user)) throw new AppError(410, 'This account can no longer be restored.');
+  await sendRestoreAccountOtp(user);
+  res.json({
+    success: true,
+    message: 'Restore OTP sent to your email.',
+    data: { email: user.email },
+  });
+});
+
+exports.confirmRestoreAccount = asyncHandler(async (req, res) => {
+  const email = normalizeEmail(req.body.email);
+  const otp = String(req.body.otp || '').trim();
+  assertValidEmail(email);
+  if (!new RegExp(`^\\d{${OTP_LENGTH}}$`).test(otp)) throw new AppError(400, 'Invalid OTP');
+  const user = await User.findOne({ email }).select('+restoreAccountOtpHash');
+  if (!user || user.isDeleted !== true) throw new AppError(400, 'Invalid OTP');
+  if (!canRestoreDeletedUser(user)) throw new AppError(410, 'This account can no longer be restored.');
+  assertValidOtpState(user.restoreAccountOtpHash, user.restoreAccountOtpExpiresAt, user.restoreAccountOtpAttempts);
+  const matches = await bcrypt.compare(otp, user.restoreAccountOtpHash);
+  if (!matches) {
+    user.restoreAccountOtpAttempts = Number(user.restoreAccountOtpAttempts || 0) + 1;
+    await user.save();
+    throw new AppError(400, 'Invalid OTP');
+  }
+  await restoreAccount(user);
+  res.json({
+    success: true,
+    message: 'Account restored successfully.',
     data: authPayload(user),
   });
 });

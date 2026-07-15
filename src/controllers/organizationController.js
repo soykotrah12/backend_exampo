@@ -96,8 +96,8 @@ exports.me = asyncHandler(async (req, res) => {
   const organization = await Organization.findById(req.user.organization)
     .populate('owner', publicProfileFields)
     .populate('plan')
-    .populate('teachers', publicTeacherFields)
-    .populate('students', publicProfileFields)
+    .populate({ path: 'teachers', select: publicTeacherFields, match: { isActive: true, isDeleted: { $ne: true } } })
+    .populate({ path: 'students', select: publicProfileFields, match: { isActive: true, isDeleted: { $ne: true } } })
     .populate('services', 'name isActive');
   if (!organization) throw new AppError(404, 'You have not joined an organization');
   await ensureCode(organization);

@@ -23,7 +23,19 @@ exports.auth = asyncHandler(async (req, _res, next) => {
   catch (_) { throw new AppError(401, 'Invalid or expired token'); }
   if (payload.type && payload.type !== 'access') throw new AppError(401, 'Invalid or expired token');
   const user = await User.findById(payload.sub);
-  if (!user || !user.isActive) throw new AppError(401, 'User account is unavailable');
+  if (!user || !user.isActive || user.isDeleted === true || user.accountStatus === 'deleted') {
+    throw new AppError(401, 'User account is unavailable');
+  }
+  const expectedTokenVersion = Number(user.tokenVersion || 0);
+  const receivedTokenVersion = payload.tokenVersion === undefined
+    ? null
+    : Number(payload.tokenVersion);
+  if (
+    (receivedTokenVersion === null && expectedTokenVersion > 0) ||
+    (receivedTokenVersion !== null && receivedTokenVersion !== expectedTokenVersion)
+  ) {
+    throw new AppError(401, 'Invalid or expired token');
+  }
   if (requiresEmailVerification(user)) throw new AppError(403, 'Please verify your email before continuing.');
   const shouldSaveLegacyVerification = markLegacyEmailVerified(user);
   if (!user.lastActiveAt || Date.now() - new Date(user.lastActiveAt).getTime() > 15 * 60 * 1000) {
