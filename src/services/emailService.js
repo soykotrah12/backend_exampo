@@ -13,6 +13,27 @@ class EmailConfigurationError extends Error {
   }
 }
 
+class EmailAuthenticationError extends Error {
+  constructor() {
+    super('Email service authentication failed');
+    this.name = 'EmailAuthenticationError';
+  }
+}
+
+class EmailRecipientError extends Error {
+  constructor() {
+    super('Incorrect email address');
+    this.name = 'EmailRecipientError';
+  }
+}
+
+class EmailDeliveryError extends Error {
+  constructor() {
+    super('Unable to send OTP. Please try again.');
+    this.name = 'EmailDeliveryError';
+  }
+}
+
 const appName = process.env.APP_NAME || 'Exampo';
 
 const escapeHtml = (value) => String(value || '')
@@ -62,6 +83,44 @@ const getTransporter = () => {
   return { transporter, from: config.from };
 };
 
+const isAuthenticationError = (error) => {
+  const responseCode = Number(error?.responseCode || 0);
+  const code = String(error?.code || '').toUpperCase();
+  return code === 'EAUTH' || responseCode === 534 || responseCode === 535;
+};
+
+const isRecipientError = (error) => {
+  const responseCode = Number(error?.responseCode || 0);
+  const code = String(error?.code || '').toUpperCase();
+  const command = String(error?.command || '').toUpperCase();
+  const response = String(error?.response || error?.message || '').toLowerCase();
+  if (Array.isArray(error?.rejected) && error.rejected.length > 0) return true;
+  if (code === 'EENVELOPE' || command === 'RCPT TO') return true;
+  if ([550, 551, 553, 554].includes(responseCode)) {
+    return /recipient|mailbox|address|user|domain|unknown|invalid|not found|no such/.test(response);
+  }
+  return false;
+};
+
+const safeEmailErrorLog = (error) => ({
+  name: error?.name,
+  code: error?.code,
+  command: error?.command,
+  responseCode: error?.responseCode,
+  missingKeys: Array.isArray(error?.missingKeys) ? error.missingKeys : undefined,
+  invalidKeys: Array.isArray(error?.invalidKeys) ? error.invalidKeys : undefined,
+  rejected: Array.isArray(error?.rejected) ? error.rejected : undefined,
+});
+
+const classifyEmailError = (error) => {
+  if (error instanceof EmailConfigurationError || error?.name === 'EmailConfigurationError') return error;
+  if (error instanceof EmailAuthenticationError || error?.name === 'EmailAuthenticationError') return error;
+  if (error instanceof EmailRecipientError || error?.name === 'EmailRecipientError') return error;
+  if (isAuthenticationError(error)) return new EmailAuthenticationError();
+  if (isRecipientError(error)) return new EmailRecipientError();
+  return new EmailDeliveryError();
+};
+
 const otpTemplate = ({ title, intro, otp, expiresInMinutes }) => {
   const safeTitle = escapeHtml(title);
   const safeIntro = escapeHtml(intro);
@@ -81,14 +140,20 @@ const otpTemplate = ({ title, intro, otp, expiresInMinutes }) => {
 };
 
 const sendMail = async ({ to, subject, html, text }) => {
-  const config = getTransporter();
-  await config.transporter.sendMail({
-    from: config.from,
-    to,
-    subject,
-    html,
-    text,
-  });
+  try {
+    const config = getTransporter();
+    await config.transporter.sendMail({
+      from: config.from,
+      to,
+      subject,
+      html,
+      text,
+    });
+  } catch (error) {
+    const classified = classifyEmailError(error);
+    console.warn('[email] send failed', safeEmailErrorLog(error));
+    throw classified;
+  }
 };
 
 const sendSignupOtpEmail = ({ to, otp, expiresInMinutes }) => sendMail({
@@ -116,7 +181,11 @@ const sendPasswordResetOtpEmail = ({ to, otp, expiresInMinutes }) => sendMail({
 });
 
 module.exports = {
+  EmailAuthenticationError,
   EmailConfigurationError,
+  EmailDeliveryError,
+  EmailRecipientError,
+  classifyEmailError,
   smtpConfig,
   sendSignupOtpEmail,
   sendPasswordResetOtpEmail,

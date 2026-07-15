@@ -9,7 +9,10 @@ const permissions = require('../services/permissionService');
 const { generateCode } = require('../utils/codeGenerator');
 const { safeAvatarUrl, withSafeAvatarUrl } = require('../utils/avatarUrl');
 const {
+  EmailAuthenticationError,
   EmailConfigurationError,
+  EmailDeliveryError,
+  EmailRecipientError,
   sendPasswordResetOtpEmail,
   sendSignupOtpEmail,
 } = require('../services/emailService');
@@ -23,8 +26,29 @@ const OTP_EXPIRES_MINUTES = Number(process.env.AUTH_OTP_EXPIRES_MINUTES || 10);
 const OTP_RESEND_COOLDOWN_SECONDS = Number(process.env.AUTH_OTP_RESEND_COOLDOWN_SECONDS || 60);
 const OTP_MAX_ATTEMPTS = Number(process.env.AUTH_OTP_MAX_ATTEMPTS || 5);
 const RESET_TOKEN_EXPIRES_MINUTES = Number(process.env.PASSWORD_RESET_TOKEN_EXPIRES_MINUTES || 15);
+const INVALID_EMAIL_MESSAGE = 'Please enter a valid email address';
+const INCORRECT_EMAIL_MESSAGE = 'Incorrect email address';
 
 const normalizeEmail = (email) => String(email || '').toLowerCase().trim();
+const isValidEmailFormat = (email) => {
+  const value = normalizeEmail(email);
+  if (!value || value.length > 254 || value.includes('..')) return false;
+  const [localPart, domain] = value.split('@');
+  if (!localPart || !domain || value.split('@').length !== 2) return false;
+  if (localPart.length > 64 || domain.length > 253 || !domain.includes('.')) return false;
+  if (!/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+$/i.test(localPart)) return false;
+  if (!/^[a-z0-9.-]+$/i.test(domain)) return false;
+  return domain.split('.').every((label) =>
+    label.length > 0 &&
+    label.length <= 63 &&
+    !label.startsWith('-') &&
+    !label.endsWith('-')
+  );
+};
+const assertValidEmail = (email) => {
+  if (!normalizeEmail(email)) throw new AppError(400, 'Email is required');
+  if (!isValidEmailFormat(email)) throw new AppError(400, INVALID_EMAIL_MESSAGE);
+};
 const addMinutes = (minutes) => new Date(Date.now() + minutes * 60 * 1000);
 const tokenSecret = () => process.env.JWT_SECRET || 'development-only-secret';
 const refreshTokenSecret = () => process.env.JWT_REFRESH_SECRET || tokenSecret();
@@ -80,14 +104,23 @@ const throwIfCoolingDown = (date) => {
 };
 
 const emailErrorToAppError = (error) => {
-  if (error instanceof EmailConfigurationError || error.name === 'EmailConfigurationError') {
-    return new AppError(503, error.message || 'Email service is not configured');
+  if (error instanceof EmailConfigurationError || error?.name === 'EmailConfigurationError') {
+    return new AppError(500, 'Email service is not configured');
   }
-  return new AppError(502, 'Unable to send email. Please try again later.');
+  if (error instanceof EmailAuthenticationError || error?.name === 'EmailAuthenticationError') {
+    return new AppError(500, 'Email service authentication failed');
+  }
+  if (error instanceof EmailRecipientError || error?.name === 'EmailRecipientError') {
+    return new AppError(400, INCORRECT_EMAIL_MESSAGE);
+  }
+  if (error instanceof EmailDeliveryError || error?.name === 'EmailDeliveryError') {
+    return new AppError(502, 'Unable to send OTP. Please try again.');
+  }
+  return new AppError(502, 'Unable to send OTP. Please try again.');
 };
 
-const sendEmailVerificationOtp = async (user) => {
-  throwIfCoolingDown(user.lastOtpSentAt);
+const sendEmailVerificationOtp = async (user, { ignoreCooldown = false } = {}) => {
+  if (!ignoreCooldown) throwIfCoolingDown(user.lastOtpSentAt);
   const otp = createOtp();
   user.isEmailVerified = false;
   user.emailVerificationStartedAt = user.emailVerificationStartedAt || new Date();
@@ -130,6 +163,13 @@ const sendPasswordResetOtp = async (user) => {
     await user.save().catch(() => {});
     throw emailErrorToAppError(error);
   }
+};
+
+const cleanupNewUnverifiedSignup = async ({ user, organization }) => {
+  if (!user?._id || user.isEmailVerified === true) return;
+  const cleanupTasks = [User.deleteOne({ _id: user._id, isEmailVerified: false }).catch(() => {})];
+  if (organization?._id) cleanupTasks.push(Organization.deleteOne({ _id: organization._id }).catch(() => {}));
+  await Promise.all(cleanupTasks);
 };
 
 const assertValidOtpState = (hash, expiresAt, attempts) => {
@@ -198,22 +238,24 @@ exports.register = asyncHandler(async (req, res) => {
   if (!['organization_owner','teacher','student'].includes(role)) throw new AppError(400, 'Invalid registration role');
   if (String(password || '').length < 8) throw new AppError(400, 'Password must contain at least 8 characters');
   const loginEmail = normalizeEmail(role === 'organization_owner' ? (organizationEmail || email) : email);
-  if (!loginEmail) throw new AppError(400, 'Email is required');
+  assertValidEmail(loginEmail);
 
   const existing = await User.findOne({ email: loginEmail });
   if (existing) {
     if (requiresEmailVerification(existing)) {
-      await sendEmailVerificationOtp(existing);
+      await sendEmailVerificationOtp(existing, { ignoreCooldown: true });
       return res.status(200).json({
         success: true,
         message: 'OTP sent to your email. Please verify your account.',
         data: { email: existing.email, requiresOtpVerification: true },
       });
     }
-    throw new AppError(409, 'Email already registered');
+    throw new AppError(409, 'Account already exists. Please sign in.');
   }
 
   let user;
+  let organization;
+  let createdForSignup = false;
   if (role === 'organization_owner') {
     const plan = await permissions.ensureFreePlan();
     const orgName = String(organizationName || name || '').trim();
@@ -233,7 +275,8 @@ exports.register = asyncHandler(async (req, res) => {
         isEmailVerified: false,
         emailVerificationStartedAt: new Date(),
       });
-      const organization = await Organization.create({
+      createdForSignup = true;
+      organization = await Organization.create({
         name: orgName,
         email: loginEmail,
         phone: orgPhone,
@@ -253,7 +296,7 @@ exports.register = asyncHandler(async (req, res) => {
       user.organization = organization._id;
       await user.save();
     } catch (error) {
-      if (user?._id) await User.deleteOne({ _id: user._id });
+      await cleanupNewUnverifiedSignup({ user, organization });
       throw error;
     }
   } else {
@@ -265,9 +308,15 @@ exports.register = asyncHandler(async (req, res) => {
       isEmailVerified: false,
       emailVerificationStartedAt: new Date(),
     });
+    createdForSignup = true;
   }
 
-  await sendEmailVerificationOtp(user);
+  try {
+    await sendEmailVerificationOtp(user);
+  } catch (error) {
+    if (createdForSignup) await cleanupNewUnverifiedSignup({ user, organization });
+    throw error;
+  }
   res.status(201).json({
     success: true,
     message: 'OTP sent to your email. Please verify your account.',
@@ -278,7 +327,7 @@ exports.register = asyncHandler(async (req, res) => {
 exports.verifyOtp = asyncHandler(async (req, res) => {
   const email = normalizeEmail(req.body.email);
   const otp = String(req.body.otp || '').trim();
-  if (!email) throw new AppError(400, 'Email is required');
+  assertValidEmail(email);
   if (!new RegExp(`^\\d{${OTP_LENGTH}}$`).test(otp)) throw new AppError(400, 'Invalid OTP');
   const user = await User.findOne({ email }).select('+emailOtpHash');
   if (!user) throw new AppError(404, 'Account not found');
@@ -310,7 +359,7 @@ exports.verifyOtp = asyncHandler(async (req, res) => {
 
 exports.resendOtp = asyncHandler(async (req, res) => {
   const email = normalizeEmail(req.body.email);
-  if (!email) throw new AppError(400, 'Email is required');
+  assertValidEmail(email);
   const user = await User.findOne({ email });
   if (!user) throw new AppError(404, 'Account not found');
   if (user.isEmailVerified === true || !requiresEmailVerification(user)) {
@@ -463,7 +512,7 @@ exports.firebaseLogin = asyncHandler(async (req, res) => {
 
 exports.forgotPassword = asyncHandler(async (req, res) => {
   const email = normalizeEmail(req.body.email);
-  if (!email) throw new AppError(400, 'Email is required');
+  assertValidEmail(email);
   const user = await User.findOne({ email });
   if (user) await sendPasswordResetOtp(user);
   res.json({ success: true, message: 'Password reset OTP sent to your email.' });
@@ -472,7 +521,7 @@ exports.forgotPassword = asyncHandler(async (req, res) => {
 exports.verifyResetOtp = asyncHandler(async (req, res) => {
   const email = normalizeEmail(req.body.email);
   const otp = String(req.body.otp || '').trim();
-  if (!email) throw new AppError(400, 'Email is required');
+  assertValidEmail(email);
   if (!new RegExp(`^\\d{${OTP_LENGTH}}$`).test(otp)) throw new AppError(400, 'Invalid OTP');
   const user = await User.findOne({ email }).select('+passwordResetOtpHash');
   if (!user) throw new AppError(400, 'Invalid OTP');
@@ -525,5 +574,6 @@ exports.me = asyncHandler(async (req, res) => {
 
 exports.logout = (_req, res) => res.json({ success: true, message: 'Logged out' });
 
+exports.isValidEmailFormat = isValidEmailFormat;
 exports.requiresEmailVerification = requiresEmailVerification;
 exports.markLegacyEmailVerified = markLegacyEmailVerified;

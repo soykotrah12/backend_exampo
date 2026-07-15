@@ -2,7 +2,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const nodemailer = require('nodemailer');
 const {
+  EmailAuthenticationError,
   EmailConfigurationError,
+  EmailDeliveryError,
+  EmailRecipientError,
+  classifyEmailError,
   resetEmailTransporter,
   sendSignupOtpEmail,
   smtpConfig,
@@ -89,6 +93,18 @@ test('configuration error reports missing env keys without exposing SMTP_PASS', 
       return true;
     },
   );
+});
+
+test('classifies SMTP auth, recipient, and unknown delivery errors safely', () => {
+  assert.equal(classifyEmailError({ code: 'EAUTH' }) instanceof EmailAuthenticationError, true);
+  assert.equal(classifyEmailError({ responseCode: 535 }) instanceof EmailAuthenticationError, true);
+  assert.equal(classifyEmailError({ command: 'RCPT TO' }) instanceof EmailRecipientError, true);
+  assert.equal(classifyEmailError({ rejected: ['wrong@example.test'] }) instanceof EmailRecipientError, true);
+  assert.equal(
+    classifyEmailError({ responseCode: 550, response: 'No such user' }) instanceof EmailRecipientError,
+    true,
+  );
+  assert.equal(classifyEmailError({ code: 'ETIMEDOUT' }) instanceof EmailDeliveryError, true);
 });
 
 test('signup OTP email sends through Nodemailer with resolved Gmail SMTP config', async () => {
