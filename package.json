@@ -5,8 +5,8 @@
   "description": "Secure API for the Exampo SaaS application",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js",
+    "start": "node init && node server.js",
+    "dev": "node init && nodemon server.js",
     "seed:plans": "node src/scripts/seedPlans.js",
     "seed:admin": "node scripts/seedSuperAdmin.js",
     "seed:super-admin": "node src/scripts/createSuperAdmin.js",

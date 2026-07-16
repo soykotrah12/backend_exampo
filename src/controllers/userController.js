@@ -119,7 +119,29 @@ exports.updateMe = asyncHandler(async (req, res) => {
       ? (safeAvatarUrl(req.body[key]) || '')
       : String(req.body[key]).trim();
   });
-  await req.user.save(); res.json({ success: true, message: 'Profile updated', data: withSafeAvatarUrl(req.user) });
+  await req.user.save();
+  const user = await User.findById(req.user._id).select('+password');
+  const data = withSafeAvatarUrl(user || req.user);
+  data.hasPassword = Boolean(user?.password);
+  res.json({ success: true, message: 'Profile updated', data });
+});
+
+exports.setPassKey = asyncHandler(async (req, res) => {
+  const passKey = String(req.body.passKey || req.body.password || '');
+  const confirmPassKey = String(req.body.confirmPassKey || req.body.confirmPassword || '');
+  if (passKey.length < 8) throw new AppError(400, 'Pass key must contain at least 8 characters');
+  if (passKey !== confirmPassKey) throw new AppError(400, 'Pass key and confirm pass key do not match');
+
+  const user = await User.findById(req.user._id).select('+password');
+  if (!user || user.isDeleted === true || !user.isActive) throw new AppError(401, 'User account is unavailable');
+  user.password = passKey;
+  await user.save();
+
+  res.json({
+    success: true,
+    message: 'Pass key set successfully',
+    data: { hasPassword: true },
+  });
 });
 
 exports.uploadAvatar = asyncHandler(async (req, res) => {

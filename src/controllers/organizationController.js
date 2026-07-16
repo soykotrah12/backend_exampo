@@ -182,18 +182,20 @@ exports.uploadLogo = asyncHandler(async (req, res) => {
 exports.submitVerification = asyncHandler(async (req, res) => {
   const organization = await currentOrganization(req.user);
   ownerOnly(req.user, organization);
-  if (organization.verificationStatus === 'pending') throw new AppError(409, 'Your verification request is already pending review');
-  if (organization.verificationStatus === 'verified') throw new AppError(409, 'Your organization is already verified');
-  if (!Buffer.isBuffer(req.body) || req.body.length === 0) throw new AppError(400, 'Select a PDF document to upload');
-  const contentType = String(req.headers['content-type'] || '').toLowerCase();
-  const fileNameHeader = String(req.headers['x-file-name'] || '').toLowerCase();
-  const looksLikePdf = req.body.subarray(0, 4).toString() === '%PDF';
-  if (!contentType.includes('pdf') && !fileNameHeader.endsWith('.pdf')) throw new AppError(400, 'Only PDF verification documents are accepted');
+  if (organization.verificationStatus === 'pending') throw new AppError(409, 'Verification request is already pending');
+  if (organization.verificationStatus === 'verified') throw new AppError(409, 'Organization is already verified');
+  const uploadedFile = req.file;
+  const buffer = uploadedFile?.buffer || req.body;
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) throw new AppError(400, 'Select a PDF document to upload');
+  const contentType = String(uploadedFile?.mimetype || req.headers['content-type'] || '').toLowerCase();
+  const fileNameHeader = String(uploadedFile?.originalname || req.headers['x-file-name'] || '').toLowerCase();
+  const looksLikePdf = buffer.subarray(0, 4).toString() === '%PDF';
+  if (!contentType.includes('pdf') && !fileNameHeader.endsWith('.pdf')) throw new AppError(400, 'Only PDF files are allowed');
   if (!looksLikePdf) throw new AppError(400, 'The selected file does not look like a valid PDF');
   const dir = path.join(__dirname, '..', '..', 'uploads', 'organization-verifications');
   await fs.mkdir(dir, { recursive: true });
   const fileName = `${organization._id}-${Date.now()}.pdf`;
-  await fs.writeFile(path.join(dir, fileName), req.body);
+  await fs.writeFile(path.join(dir, fileName), buffer);
   organization.verificationStatus = 'pending';
   organization.verificationDocumentUrl = `${req.protocol}://${req.get('host')}/uploads/organization-verifications/${fileName}`;
   organization.verificationSubmittedAt = new Date();
@@ -201,7 +203,15 @@ exports.submitVerification = asyncHandler(async (req, res) => {
   organization.verificationReviewedBy = null;
   organization.verificationRejectionReason = '';
   await organization.save();
-  res.json({ success: true, message: 'Your verification request has been submitted.', data: organization });
+  res.json({
+    success: true,
+    message: 'Organization verification submitted successfully',
+    data: {
+      verificationStatus: organization.verificationStatus,
+      documentUrl: organization.verificationDocumentUrl,
+      ...organization.toObject(),
+    },
+  });
 });
 
 exports.joinByCode = asyncHandler(async (req, res) => {
