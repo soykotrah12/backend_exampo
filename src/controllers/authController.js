@@ -79,11 +79,13 @@ const tokenFor = (user, type = 'access') => jwt.sign(
 const authPayload = (user) => {
   const accessToken = tokenFor(user);
   const refreshToken = tokenFor(user, 'refresh');
+  const safeUser = withSafeAvatarUrl(user);
+  safeUser.hasPassword = Boolean(user.password);
   return {
     token: accessToken,
     accessToken,
     refreshToken,
-    user: withSafeAvatarUrl(user),
+    user: safeUser,
   };
 };
 
@@ -513,7 +515,7 @@ exports.verifyOtp = asyncHandler(async (req, res) => {
   const otp = String(req.body.otp || '').trim();
   assertValidEmail(email);
   if (!new RegExp(`^\\d{${OTP_LENGTH}}$`).test(otp)) throw new AppError(400, 'Invalid OTP');
-  const user = await User.findOne({ email }).select('+emailOtpHash');
+  const user = await User.findOne({ email }).select('+emailOtpHash +password');
   if (!user) throw new AppError(404, 'Account not found');
   if (user.isEmailVerified === true) {
     return res.json({ success: true, message: 'Account already verified. Please sign in.', data: { email: user.email } });
@@ -600,7 +602,7 @@ exports.firebaseLogin = asyncHandler(async (req, res) => {
 
   let user = await User.findOne({
     $or: [{ firebaseUid }, { email }],
-  });
+  }).select('+password');
 
   if (user) {
     if (user.isDeleted === true) {
@@ -701,7 +703,7 @@ exports.confirmRestoreAccount = asyncHandler(async (req, res) => {
   const otp = String(req.body.otp || '').trim();
   assertValidEmail(email);
   if (!new RegExp(`^\\d{${OTP_LENGTH}}$`).test(otp)) throw new AppError(400, 'Invalid OTP');
-  const user = await User.findOne({ email }).select('+restoreAccountOtpHash');
+  const user = await User.findOne({ email }).select('+restoreAccountOtpHash +password');
   if (!user || user.isDeleted !== true) throw new AppError(400, 'Invalid OTP');
   if (!canRestoreDeletedUser(user)) throw new AppError(410, 'This account can no longer be restored.');
   assertValidOtpState(user.restoreAccountOtpHash, user.restoreAccountOtpExpiresAt, user.restoreAccountOtpAttempts);
@@ -777,7 +779,9 @@ exports.resetPassword = asyncHandler(async (req, res) => {
 });
 
 exports.me = asyncHandler(async (req, res) => {
-  const data = withSafeAvatarUrl(req.user);
+  const user = await User.findById(req.user._id).select('+password');
+  const data = withSafeAvatarUrl(user || req.user);
+  data.hasPassword = Boolean(user?.password);
   res.json({ success: true, data });
 });
 

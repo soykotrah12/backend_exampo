@@ -16,6 +16,7 @@ const { auth, allowRoles, requireActiveTeacherAccess } = require('../middleware/
 const { requireFields } = require('../middleware/validate');
 const csvUpload = require('../middleware/csvUpload');
 const avatarUpload = require('../middleware/avatarUpload');
+const verificationUpload = require('../middleware/verificationUpload');
 
 router.post('/auth/register', requireFields('name','email','password','role'), authController.register);
 router.post('/auth/login', requireFields('email','password'), authController.login);
@@ -53,13 +54,14 @@ router.post('/v1/auth/logout', auth, authController.logout);
 router.get('/v1/auth/me', auth, authController.me);
 router.get('/users/me', auth, authController.me);
 router.patch('/users/me', auth, userController.updateMe);
+router.post('/users/me/set-pass-key', auth, userController.setPassKey);
 router.post('/users/me/avatar', auth, avatarUpload, userController.uploadAvatar);
 router.post('/users/me/delete-request', auth, userController.requestDeleteAccountOtp);
 router.post('/users/me/delete-confirm', auth, requireFields('otp'), userController.confirmDeleteAccount);
 router.get('/organizations/me', auth, organization.me);
 router.patch('/organizations/me', auth, allowRoles('organization_owner'), organization.updateMe);
 router.post('/organizations/me/logo', auth, allowRoles('organization_owner'), express.raw({ type: ['image/jpeg','image/png','image/webp'], limit: '3mb' }), organization.uploadLogo);
-router.post('/organizations/me/verification', auth, allowRoles('organization_owner'), express.raw({ type: ['application/pdf','application/x-pdf'], limit: '10mb' }), organization.submitVerification);
+router.post('/organizations/me/verification', auth, allowRoles('organization_owner'), verificationUpload, organization.submitVerification);
 router.get('/organizations/dashboard-summary', auth, allowRoles('organization_owner'), organization.dashboardSummary);
 router.get('/organizations/students', auth, allowRoles('organization_owner','teacher'), requireActiveTeacherAccess, organization.students);
 router.get('/organizations/students/:studentId', auth, allowRoles('organization_owner','teacher'), requireActiveTeacherAccess, organization.studentDetails);
